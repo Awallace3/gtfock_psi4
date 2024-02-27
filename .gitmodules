@@ -4,9 +4,12 @@
 [submodule "libcint"]
 	path = libcint
 	url = git@github.com:Awallace3/libcint.git
+	branch = cmake
 [submodule "GTMatrix"]
 	path = GTMatrix
 	url = git@github.com:Awallace3/GTMatrix.git
+	branch = cmake
 [submodule "GTFock"]
 	path = GTFock
 	url = git@github.com:Awallace3/GTFock.git
+	branch = cmake
