@@ -13,3 +13,6 @@
 	path = GTFock
 	url = git@github.com:Awallace3/GTFock.git
 	branch = cmake
+[submodule "OptErd_Makefile"]
+	path = OptErd_Makefile
+	url = git@github.com:Awallace3/OptErd_Makefile.git

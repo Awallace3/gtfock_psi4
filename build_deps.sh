@@ -5,19 +5,26 @@
 # . /theoryfs2/ds/amwalla3/intel/oneapi/compiler/2021.4.0/env/vars.sh
 # . /theoryfs2/ds/amwalla3/intel/oneapi/compiler/2023.2.0/env/vars.sh # icc/icpc
 
-export CC=icc
-export CXX=icpc
+# export CC=icc
+# export CXX=icpc
 # check if simint-generator exists
 if [ ! -d simint-generator ]; then
     git submodule update --init --recursive
 fi
 
+export CC=$CONDA_PREFIX/bin/gcc
+export CXX=$CONDA_PREFIX/bin/g++
+export MPICC=$CONDA_PREFIX/bin/mpicc
+export MPICXX=$CONDA_PREFIX/bin/mpicxx
+
+export WORK_TOP=$PWD
+
 # if [ ! -d simint ]; then
     cd simint-generator
     rm -r build
     mkdir build && cd build
-    CC=$CC CXX=$CXX cmake .. # -DCMAKE_CC_FLAGS="-fPIC -I/usr/include/x86_64-linux-gnu -std=c++14" -DCMAKE_CXX_FLAGS="-fPIC -I/usr/include/x86_64-linux-gnu -std=c++14"
-    make -j16
+    CC=$CC CXX=$CXX cmake ../ # -DCMAKE_CC_FLAGS="-fPIC -I/usr/include/x86_64-linux-gnu -std=c++14" -DCMAKE_CXX_FLAGS="-fPIC -I/usr/include/x86_64-linux-gnu -std=c++14"
+    make -j8
     cd ..
 
     # Generate Simint source code (requires Python3)
@@ -32,38 +39,69 @@ fi
     # Commonly used SIMINT_VECTOR: commonavx512, avx2
 
     mkdir build-avx512 && cd build-avx512
-    CC=$CC CXX=$CXX cmake ../ -DSIMINT_VECTOR=commonavx512 -DCMAKE_INSTALL_PREFIX=./install -DCMAKE_CXX_FLAGS="-fPIC"
-    make -j16 install
-    export SIMINT_LIBRARY_DIR=$PWD/install
+    CC=$CC CXX=$CXX cmake ../ -DSIMINT_VECTOR=commonavx512 -DCMAKE_INSTALL_PREFIX=./install
+    make -j8 install
     cd ../..
 # fi
+# exit
 
-cd libcint
-export objdir=objdir_cint
-rm -r $objdir
-rm -r include
-rm -r lib
-mkdir -p $objdir
-cmake -S. -B${objdir} -DCMAKE_C_COMPILER=icc -DCMAKE_CXX_COMPILER=icpc -DCMAKE_Fortran_COMPILER=ifort -DBUILD_SHARED_LIBS=ON -DCMAKE_PREFIX_PATH=${SIMINT_LIBRARY_DIR} -G Ninja -DCMAKE_INSTALL_PREFIX=.
-cd $objdir
-ninja install
-cd ..
+# if [ ! -d erd ]; then
+#     git clone git@github.com:psi4/erd.git
+#     cd erd
+#     cmake -H. -Bobjdir -DCMAKE_INSTALL_PREFIX=./install # -DCMAKE_Fortran_FLAGS="${CMAKE_Fortran_FLAGS} -fno-underscoring"
+#     cd objdir && make
+#     make install
+#     cd ../../
+# fi
 
-cd ../GTMatrix
-rm -r build
-rm -r include
-rm -r lib
-mkdir -p build && cd build
-cmake -G Ninja .. -DCMAKE_INSTALL_PREFIX=.. -DCMAKE_C_COMPILER=$CC -DCMAKE_CXX_COMPILER=$CXX -DMPI_C_COMPILER=mpiicc -DMPI_CXX_COMPILER=mpiicpc
-ninja install
-cd ..
 
-cd ../GTFock
+export SIMINT_LIBRARY_DIR=$PWD/simint/build-avx512/install
+export ERD_STATIC=$PWD/erd/install/lib64/liberd.a
+export LIBCINT_LIBRARY_DIR=$PWD/libcint/share/cmake/CInt
+export GTMATRIX_LIBRARY_DIR=$PWD/GTMatrix/share/cmake/GTMatrix
+
+
+# if [ ! -d $LIBCINT_LIBRARY_DIR ]; then
+    echo "Building libcint"
+    cd libcint
+    export objdir=objdir_cint
+    rm -r $objdir
+    rm -r include
+    rm -r lib
+    mkdir -p $objdir
+    cmake -S. -B${objdir} -G Ninja -DCMAKE_C_COMPILER=$CC -DCMAKE_CXX_COMPILER=$CXX  -DBUILD_SHARED_LIBS=ON -DCMAKE_PREFIX_PATH=${SIMINT_LIBRARY_DIR} -DCMAKE_INSTALL_PREFIX=. 
+    ninja -C ${objdir} install
+    cd ..
+# fi
+exit
+
+# if [ ! -d $GMATRIX_LIBRARY_DIR]; then
+    cd GTMatrix
+    echo "Building GTMatrix"
+    rm -r build
+    rm -r include
+    rm -r lib
+    mkdir -p build
+    # cmake -S. -Bbuild -G Ninja .. -DCMAKE_INSTALL_PREFIX=.. -DCMAKE_C_COMPILER=$CC -DCMAKE_PREFIX_PATH=${SIMINT_LIBRARY_DIR}
+    cmake -S. -Bbuild -G Ninja .. -DCMAKE_C_COMPILER=$CC -DCMAKE_PREFIX_PATH=${SIMINT_LIBRARY_DIR} -DCMAKE_INSTALL_PREFIX=.
+    ninja -C build install
+    cd ..
+# fi
+
+echo "Building GTFock"
+cd GTFock
 rm -rf build
 mkdir -p build
-cd build
+# export AR=xiar rcs
 
-export AR=xiar rcs
-cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCInt_DIR=/theoryfs2/ds/amwalla3/projects/gtf_psi4/libcint/share/cmake/CInt -DGTMatrix_DIR=/theoryfs2/ds/amwalla3/projects/gtf_psi4/GTMatrix/share/cmake/GTMatrix .. -DCMAKE_C_COMPILER=$CC -DCMAKE_CXX_COMPILER=$CXX -DCMAKE_Fortran_COMPILER=ifort -DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}
-make
+export MPICC=$CONDA_PREFIX/bin/mpicc
+export MPICXX=$CONDA_PREFIX/bin/mpicxx
+
+echo $MPICC
+echo $MPICXX
+
+export prefix_path="$SIMINT_LIBRARY_DIR"
+
+cmake -S. -Bbuild -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCInt_DIR=${LIBCINT_LIBRARY_DIR} -DGTMatrix_DIR=${GTMATRIX_LIBRARY_DIR} -DCMAKE_C_COMPILER=$CC -DCMAKE_CXX_COMPILER=$CXX -DCMAKE_MPICC_COMPILER=$MPICC -DCMAKE_MPICXX_COMPILER=$MPICXX -G Ninja -DCMAKE_INSTALL_PREFIX=. -DCMAKE_PREFIX_PATH=${prefix_path}
+ninja -C build 
 cd ..
