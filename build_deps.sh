@@ -19,7 +19,7 @@ export MPICXX=$CONDA_PREFIX/bin/mpicxx
 
 export WORK_TOP=$PWD
 
-# if [ ! -d simint ]; then
+if [ ! -d simint ]; then
     cd simint-generator
     rm -r build
     mkdir build && cd build
@@ -42,26 +42,38 @@ export WORK_TOP=$PWD
     CC=$CC CXX=$CXX cmake ../ -DSIMINT_VECTOR=commonavx512 -DCMAKE_INSTALL_PREFIX=./install
     make -j8 install
     cd ../..
-# fi
+fi
 # exit
 
-# if [ ! -d erd ]; then
-#     git clone git@github.com:psi4/erd.git
-#     cd erd
-#     cmake -H. -Bobjdir -DCMAKE_INSTALL_PREFIX=./install # -DCMAKE_Fortran_FLAGS="${CMAKE_Fortran_FLAGS} -fno-underscoring"
-#     cd objdir && make
-#     make install
-#     cd ../../
-# fi
-
-
 export SIMINT_LIBRARY_DIR=$PWD/simint/build-avx512/install
-export ERD_STATIC=$PWD/erd/install/lib64/liberd.a
+export ERD_OED_LIB=$PWD/OptErd_Makefile/external/lib
+export ERD_LIBRARY_DIR=$PWD/OptErd_Makefile/external/share/cmake/erd
+export OED_LIBRARY_DIR=$PWD/OptErd_Makefile/external/share/cmake/oed
 export LIBCINT_LIBRARY_DIR=$PWD/libcint/share/cmake/CInt
 export GTMATRIX_LIBRARY_DIR=$PWD/GTMatrix/share/cmake/GTMatrix
 
+if [ ! $ERD_OED_LIB/liberd.a ]; then
+    echo "Building ERD"
+    cd ./OptErd_Makefile/external/erd
+    rm ../lib/liberd.a
+    rm -r build
+    mkdir build
+    cmake -S. -Bbuild -G Ninja -DCMAKE_INSTALL_PREFIX=..
+    ninja -C build install
+    cd ../.././
 
-# if [ ! -d $LIBCINT_LIBRARY_DIR ]; then
+fi
+if [ ! $ERD_OED_LIB/liberd.a ]; then
+    cd ./OptErd_Makefile/external/oed
+    cd oed
+    rm -r build
+    rm -r ../lib/liboed.a
+    cmake -S. -Bbuild -G Ninja -DCMAKE_INSTALL_PREFIX=.. -DCMAKE_Fortran_COMPILER=x86_64-conda-linux-gnu-f95 # from conda-forge
+    ninja -C build install
+    cd ../../..
+fi
+
+if [ ! -d $LIBCINT_LIBRARY_DIR ]; then
     echo "Building libcint"
     cd libcint
     export objdir=objdir_cint
@@ -69,11 +81,10 @@ export GTMATRIX_LIBRARY_DIR=$PWD/GTMatrix/share/cmake/GTMatrix
     rm -r include
     rm -r lib
     mkdir -p $objdir
-    cmake -S. -B${objdir} -G Ninja -DCMAKE_C_COMPILER=$CC -DCMAKE_CXX_COMPILER=$CXX  -DBUILD_SHARED_LIBS=ON -DCMAKE_PREFIX_PATH=${SIMINT_LIBRARY_DIR} -DCMAKE_INSTALL_PREFIX=. 
+    cmake -S. -B${objdir} -G Ninja -DCMAKE_C_COMPILER=$CC -DCMAKE_CXX_COMPILER=$CXX  -DBUILD_SHARED_LIBS=ON -DCMAKE_PREFIX_PATH=${SIMINT_LIBRARY_DIR} -Derd_DIR=$ERD_LIBRARY_DIR -Doed_DIR=$OED_LIBRARY_DIR -DCMAKE_INSTALL_PREFIX=. 
     ninja -C ${objdir} install
     cd ..
-# fi
-exit
+fi
 
 # if [ ! -d $GMATRIX_LIBRARY_DIR]; then
     cd GTMatrix
