@@ -11,9 +11,9 @@ Provides a more standardized way to build simint and gtfock to be used in Psi4
 4. Run `bash build_deps.sh`
 
 ## Objectives
-- [o] Build GTFock with gcc/g++ instead of icc/icpc
+- [ ] Build GTFock with gcc/g++ instead of icc/icpc
 - [ ] switch from `build_deps.sh` to a more cmake friendly approach
-    - [o] submodules:
+    - [ ] submodules:
         - [X] libcint CMakeLists.txt
         - [X] ERD CMakeLists.txt
         - [X] OED CMakeLists.txt
