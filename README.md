@@ -1,5 +1,5 @@
 # gtfock_psi4
-Provides a more standardized way to build simint and gtfock to be used in Psi4
+Provides a more standardized way to build gtfock to be used in Psi4
 
 # Install
 1. We need to clone this repository recursively to clone the git submodules:
