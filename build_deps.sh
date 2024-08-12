@@ -12,10 +12,18 @@ if [ ! -d simint-generator ]; then
     git submodule update --init --recursive
 fi
 
-export CC=$CONDA_PREFIX/bin/gcc
-export CXX=$CONDA_PREFIX/bin/g++
-export MPICC=$CONDA_PREFIX/bin/mpicc
-export MPICXX=$CONDA_PREFIX/bin/mpicxx
+# export CC=$CONDA_PREFIX/bin/gcc
+# export CXX=$CONDA_PREFIX/bin/g++
+export FC=gfortran
+
+export CC=gcc
+export CXX=g++
+export MPICC=mpicc
+export MPICXX=mpicxx
+# export MPICC=$CONDA_PREFIX/bin/mpicc
+# export MPICXX=$CONDA_PREFIX/bin/mpicxx
+# export MPICC=$CONDA_PREFIX/bin/mpicc
+# export MPICXX=$CONDA_PREFIX/bin/mpicxx
 
 export WORK_TOP=$PWD
 
@@ -24,7 +32,7 @@ if [ ! -d simint ]; then
     rm -r build
     mkdir build && cd build
     CC=$CC CXX=$CXX cmake ../ # -DCMAKE_CC_FLAGS="-fPIC -I/usr/include/x86_64-linux-gnu -std=c++14" -DCMAKE_CXX_FLAGS="-fPIC -I/usr/include/x86_64-linux-gnu -std=c++14"
-    make -j8
+    make -j16
     cd ..
 
     # Generate Simint source code (requires Python3)
@@ -40,10 +48,15 @@ if [ ! -d simint ]; then
 
     mkdir build-avx512 && cd build-avx512
     CC=$CC CXX=$CXX cmake ../ -DSIMINT_VECTOR=commonavx512 -DCMAKE_INSTALL_PREFIX=./install
-    make -j8 install
+    make -j16 install
     cd ../..
 fi
-# exit
+
+#exit
+# export CC=icc
+# export CXX=icpc
+# export FC=ifort
+
 
 export SIMINT_LIBRARY_DIR=$PWD/simint/build-avx512/install
 export ERD_OED_LIB=$PWD/OptErd_Makefile/external/lib
@@ -52,22 +65,19 @@ export OED_LIBRARY_DIR=$PWD/OptErd_Makefile/external/share/cmake/oed
 export LIBCINT_LIBRARY_DIR=$PWD/libcint/share/cmake/CInt
 export GTMATRIX_LIBRARY_DIR=$PWD/GTMatrix/share/cmake/GTMatrix
 
-if [ ! $ERD_OED_LIB/liberd.a ]; then
+if [ ! $ERD_OED_LIB/../include/erd_profile.h ]; then
     echo "Building ERD"
     cd ./OptErd_Makefile/external/erd
-    rm ../lib/liberd.a
     rm -r build
     mkdir build
     cmake -S. -Bbuild -G Ninja -DCMAKE_INSTALL_PREFIX=..
     ninja -C build install
-    cd ../.././
-
+    cd ../../../
 fi
 if [ ! $ERD_OED_LIB/liberd.a ]; then
+    rm $ERD_OED_LIB/liberd.a
     cd ./OptErd_Makefile/external/oed
-    cd oed
     rm -r build
-    rm -r ../lib/liboed.a
     cmake -S. -Bbuild -G Ninja -DCMAKE_INSTALL_PREFIX=.. -DCMAKE_Fortran_COMPILER=x86_64-conda-linux-gnu-f95 # from conda-forge
     ninja -C build install
     cd ../../..
@@ -81,12 +91,12 @@ if [ ! -d $LIBCINT_LIBRARY_DIR ]; then
     rm -r include
     rm -r lib
     mkdir -p $objdir
-    cmake -S. -B${objdir} -G Ninja -DCMAKE_C_COMPILER=$CC -DCMAKE_CXX_COMPILER=$CXX  -DBUILD_SHARED_LIBS=ON -DCMAKE_PREFIX_PATH=${SIMINT_LIBRARY_DIR} -Derd_DIR=$ERD_LIBRARY_DIR -Doed_DIR=$OED_LIBRARY_DIR -DCMAKE_INSTALL_PREFIX=. 
+    cmake -S. -B${objdir} -G Ninja -DCMAKE_C_COMPILER=$CC -DCMAKE_CXX_COMPILER=$CXX  -DBUILD_SHARED_LIBS=ON -DCMAKE_PREFIX_PATH=${SIMINT_LIBRARY_DIR}  -Doed_DIR=$OED_LIBRARY_DIR -DCMAKE_INSTALL_PREFIX=. -Derd_DIR=$ERD_LIBRARY_DIR
     ninja -C ${objdir} install
     cd ..
 fi
 
-# if [ ! -d $GMATRIX_LIBRARY_DIR]; then
+if [ ! -d $GMATRIX_LIBRARY_DIR]; then
     cd GTMatrix
     echo "Building GTMatrix"
     rm -r build
@@ -97,22 +107,23 @@ fi
     cmake -S. -Bbuild -G Ninja .. -DCMAKE_C_COMPILER=$CC -DCMAKE_PREFIX_PATH=${SIMINT_LIBRARY_DIR} -DCMAKE_INSTALL_PREFIX=.
     ninja -C build install
     cd ..
-# fi
+fi
+# exit
 
 echo "Building GTFock"
 cd GTFock
-rm -rf build
-mkdir -p build
+# rm -rf build
 # export AR=xiar rcs
 
-export MPICC=$CONDA_PREFIX/bin/mpicc
-export MPICXX=$CONDA_PREFIX/bin/mpicxx
 
 echo $MPICC
 echo $MPICXX
 
 export prefix_path="$SIMINT_LIBRARY_DIR"
 
-cmake -S. -Bbuild -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCInt_DIR=${LIBCINT_LIBRARY_DIR} -DGTMatrix_DIR=${GTMATRIX_LIBRARY_DIR} -DCMAKE_C_COMPILER=$CC -DCMAKE_CXX_COMPILER=$CXX -DCMAKE_MPICC_COMPILER=$MPICC -DCMAKE_MPICXX_COMPILER=$MPICXX -G Ninja -DCMAKE_INSTALL_PREFIX=. -DCMAKE_PREFIX_PATH=${prefix_path}
+if [ ! -d ./build ]; then
+    mkdir -p build
+    cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCInt_DIR=${LIBCINT_LIBRARY_DIR} -DGTMatrix_DIR=${GTMATRIX_LIBRARY_DIR} -Derd_DIR=$ERD_LIBRARY_DIR -Doed_DIR=$OED_LIBRARY_DIR -DCMAKE_C_COMPILER=$CC -DCMAKE_CXX_COMPILER=$CXX -G Ninja -DCMAKE_INSTALL_PREFIX=. -DCMAKE_PREFIX_PATH=${prefix_path}
+fi
 ninja -C build 
 cd ..
