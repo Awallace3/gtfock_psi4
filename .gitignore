@@ -31,3 +31,4 @@
 *.out
 *.app
 simint
+simint_icc
