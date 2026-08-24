@@ -6,6 +6,8 @@
 *.lo
 *.o
 *.obj
+*.pyc
+__pycache__/
 
 # Precompiled Headers
 *.gch
@@ -32,3 +34,10 @@
 *.app
 simint
 simint_icc
+
+# Reproducible local validation artifacts
+.conda-envs/
+.conda-pkgs/
+_build/
+_install/
+build/

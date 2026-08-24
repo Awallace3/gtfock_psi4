@@ -1,0 +1,423 @@
+--- a/pfock/update_F.h
++++ b/pfock/update_F.h
+@@ -1,17 +1,6 @@
+-#include <immintrin.h>
+ #pragma once
+
+-static inline void atomic_add_f64(volatile double* global_value, double addend)
+-{
+-    uint64_t expected_value, new_value;
+-    do {
+-        double old_value = *global_value;
+-        // expected_value = _castf64_u64(old_value);
+-        // new_value = _castf64_u64(old_value + addend);
+-        expected_value = (uint64_t)old_value;
+-        new_value = (uint64_t)(old_value + addend);
+-    } while (!__sync_bool_compare_and_swap((volatile uint64_t*)global_value, expected_value, new_value));
+-}
++#include "gtfock_atomic.h"
+
+ static inline void direct_add_block(double *dst, int ldd, double *src, int lds, int nrows, int ncols)
+ {
+--- a/pfock/one_electron.c
++++ b/pfock/one_electron.c
+@@ -314,7 +314,7 @@
+ void my_peig(GTMatrix_t gtm_A, GTMatrix_t gtm_B, int n, int nprow, int npcol,
+              double *eval) {
+   int myrank, ictxt, myrow, mycol, lo[2], hi[2], ld;
+-  int descA[9], descZ[9], info, izero = 0, ione = 1, lwork, liwork;
++  int descA[9], descZ[9], info, izero = 0, ione = 1, lwork;
+   double t1, t2, *A, *Z, *work;
+
+   MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+@@ -327,7 +327,6 @@
+   int nrows = numroc_(&n, &nb, &myrow, &izero, &nprow);
+   int ncols = numroc_(&n, &nb, &mycol, &izero, &npcol);
+   int blocksize = nrows * ncols;
+-  printf("  nrows = %d, ncols = %d, blocksize = %d\n", nrows, ncols, blocksize);
+
+   A = (double *)aligned_malloc(blocksize * sizeof(double), 64);
+   Z = (double *)aligned_malloc(blocksize * sizeof(double), 64);
+@@ -336,9 +335,10 @@
+   // memset(A, 0, blocksize * sizeof(double));
+   // memset(Z, 0, blocksize * sizeof(double));
+
+-  // Arrays initialized for Schwartz eigenvalue
+-  descinit_(descA, &n, &n, &nb, &nb, &izero, &izero, &ictxt, &nrows, &info);
+-  descinit_(descZ, &n, &n, &nb, &nb, &izero, &izero, &ictxt, &nrows, &info);
++  // ScaLAPACK requires a local leading dimension of at least one.
++  int lld = nrows > 0 ? nrows : 1;
++  descinit_(descA, &n, &n, &nb, &nb, &izero, &izero, &ictxt, &lld, &info);
++  descinit_(descZ, &n, &n, &nb, &nb, &izero, &izero, &ictxt, &lld, &info);
+
+   // Populate matrix A and adjust Z with hypothetical values(Matrix
+   // initialization, knowledge initialize data source)
+@@ -361,7 +361,6 @@
+
+     for (int j = 1; j <= ncols; j += nb) {
+       lo[1] = indxl2g_(&j, &nb, &mycol, &izero, &npcol) - 1;
+-      printf("lo[0] = %d, lo[1] = %d\n", lo[0], lo[1]);
+       hi[1] = lo[1] + nb - 1;
+       hi[1] = hi[1] >= n ? hi[1] = n - 1 : hi[1];
+       ld = ncols;
+@@ -384,59 +383,33 @@
+     }
+   }
+
+-  work = (double *)aligned_malloc(2 * sizeof(double), 64);
+-  int *iwork = (int *)aligned_malloc(2 * sizeof(int), 64);
+-  // memset(work, 0, 2 * sizeof(double));
+-  // memset(iwork, 0, 2 * sizeof(int));
+-
++  work = (double *)aligned_malloc(sizeof(double), 64);
++  assert(work != NULL);
+   lwork = -1;
+-  liwork = -1;
+-
+-  printf("prior to pdsyevd_\n");
+
+-  // Ensure right conversions added validate wrong conversion/accuracy ratio
+-  // Rule Synchron.ensuring Z-Matrix valid<d*nx-k correlations>
+-  // Cblacs_barrier(ictxt, "All");
+   MPI_Barrier(MPI_COMM_WORLD);
+-  // seg fault from pdsyevd_ call but not pdsyev...?
+-  // pdsyevd_("V", "U", &n, A, &ione, &ione, descA, eval, Z, &ione, &ione,
+-  // descZ, work, &lwork, iwork, &liwork, &info);
+   pdsyev("V", "U", &n, A, &ione, &ione, descA, eval, Z, &ione, &ione, descZ,
+          work, &lwork, &info);
+-  printf("after first call pdsyevd_\n");
+-
+   if (info != 0) {
+-    printf("[%d] Error In first pdsyevd_ execution: EXIT CODE=%d\n", myrank,
+-           info);
++    printf("[%d] pdsyev workspace query failed: %d\n", myrank, info);
+     MPI_Abort(MPI_COMM_WORLD, info);
+   }
+
+   lwork = (int)work[0];
+-  liwork = (int)iwork[0];
+-
+   aligned_free(work);
+-  aligned_free(iwork);
+-
+-  work = (double *)aligned_malloc(lwork * sizeof(double), 64);
+-  iwork = (int *)aligned_malloc(liwork * sizeof(int), 64);
+-  assert(work && iwork);
++  work = (double *)aligned_malloc((size_t)lwork * sizeof(double), 64);
++  assert(work != NULL);
+
+   t1 = MPI_Wtime();
+-  // pdsyevd_("V", "U", &n, A, &ione, &ione, descA, eval, Z, &ione, &ione,
+-  // descZ, work, &lwork, iwork, &liwork, &info);
+   pdsyev("V", "U", &n, A, &ione, &ione, descA, eval, Z, &ione, &ione, descZ,
+          work, &lwork, &info);
+-
+   t2 = MPI_Wtime();
+
+   if (info != 0) {
+-    printf("[%d] Error In Second pdsyevd_ execution: EXIT CODE=%d\n", myrank,
+-           info);
++    printf("[%d] pdsyev execution failed: %d\n", myrank, info);
+     MPI_Abort(MPI_COMM_WORLD, info);
+-  } else if (!(myrank)) {
+-    printf("Done computing eigenvalues successfully. Computation duration= "
+-           "%.3lf secs\n",
+-           t2 - t1);
++  } else if (myrank == 0) {
++    printf("Eigensolve completed in %.3lf secs\n", t2 - t1);
+   }
+
+   // store desination matrix
+@@ -463,9 +436,6 @@
+   GTM_execBatchPut(gtm_B);
+   GTM_stopBatchPut(gtm_B);
+   GTM_sync(gtm_B);
+-  // assert that gtm_B is not filled with zeros
+-  assert(gtm_B->data[0] != 0.0);
+-
+   aligned_free(A);
+   aligned_free(Z);
+   aligned_free(work);
+--- a/pfock/pfock.c
++++ b/pfock/pfock.c
+@@ -611,11 +611,11 @@
+     printf("PFock_t size: %lu\n", sizeof(struct PFock));
+     PFock_t pfock = (PFock_t)PFOCK_MALLOC(sizeof(struct PFock));
+     if (NULL == pfock) {
+-        PFOCK_PRINTF(1, "Failed to allocate memory: %lld\n",
++        PFOCK_PRINTF(1, "Failed to allocate memory: %zu\n",
+             sizeof(struct PFock));
+         return PFOCK_STATUS_ALLOC_FAILED;
+     }
+-    PFOCK_PRINTF(1, "PFock memory: %lld\n", sizeof(struct PFock));
++    PFOCK_PRINTF(1, "PFock memory: %zu\n", sizeof(struct PFock));
+     // memset(pfock, 0, sizeof(PFock_t));
+     memset(pfock, 0, sizeof(struct PFock));
+
+@@ -1355,22 +1355,22 @@
+     MPI_Gather (&pfock->timenexttask, 1, MPI_DOUBLE,
+         pfock->mpi_timenexttask, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+     if (myrank == 0) {
+-        double total_timepass;
+-        double max_timepass;
+-        double total_timereduce;
+-        double total_timeinit;
+-        double total_timecomp;
+-        double total_timegather;
+-        double total_timescatter;
+-        double total_usq;
+-        double max_usq;
+-        double total_uitl;
+-        double max_uitl;
+-        double total_steals;
+-        double total_stealfrom;
+-        double total_ngacalls;
+-        double total_volumega;
+-        double total_timenexttask;
++        double total_timepass = 0.0;
++        double max_timepass = 0.0;
++        double total_timereduce = 0.0;
++        double total_timeinit = 0.0;
++        double total_timecomp = 0.0;
++        double total_timegather = 0.0;
++        double total_timescatter = 0.0;
++        double total_usq = 0.0;
++        double max_usq = 0.0;
++        double total_uitl = 0.0;
++        double max_uitl = 0.0;
++        double total_steals = 0.0;
++        double total_stealfrom = 0.0;
++        double total_ngacalls = 0.0;
++        double total_volumega = 0.0;
++        double total_timenexttask = 0.0;
+         for (int i = 0; i < pfock->nprocs; i++) {
+             total_timepass += pfock->mpi_timepass[i];
+             max_timepass =
+--- a/pscf/scf.c
++++ b/pscf/scf.c
+@@ -66,33 +66,13 @@
+             double *guess;
+             int spos, epos, ld;
+             CInt_getInitialGuess(basis, i, &guess, &spos, &epos);
+-            printf("spos = %d, epos = %d\n", spos, epos);
+             ld = epos - spos + 1;
+-            for (int j = spos; j <= epos; j++){
+-                printf("guess[%d] = %.16f\n", j, guess[j]);
+-            }
+             double *Dmat_ptr = pfock->D_mat + spos * nbf + spos;
+             copy_double_matrix_block(Dmat_ptr, nbf, guess, ld, ld, ld);
+-            if (myrank == 0){
+-                printf("GTMatrix sync done\n");
+-                for (int i=0; i<=nbf; i++){
+-                    for (int j=0; j<=nbf; j++){
+-                        printf("pfock->D_mat[%d] = %.16f\n", i*nbf+j, pfock->D_mat[i*nbf+j]);
+-                    }
+-                }
+-            }
+         }
+         GTM_putBlock(pfock->gtm_Dmat, 0, nbf, 0, nbf, pfock->D_mat, nbf);
+     }
+     GTM_sync(pfock->gtm_Dmat);
+-    if (myrank == 0){
+-        printf("GTMatrix sync done\n");
+-        for (int i=0; i<=nbf; i++){
+-            for (int j=0; j<=nbf; j++){
+-                printf("pfock->D_mat[%d] = %.16f\n", i*nbf+j, pfock->D_mat[i*nbf+j]);
+-            }
+-        }
+-    }
+
+     MPI_Bcast(&R, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+@@ -108,13 +88,7 @@
+         for (int x = rowstart; x <= rowend; x++)
+             #pragma omp simd
+             for (int y = colstart; y <= colend; y++)
+-        {
+-
+                 D_block[(x - rowstart) * ldD + (y - colstart)] *= R;
+-            // If I set this to 0.00001, I do get an electronic energy computed... something is wrong with the initial guess copying to D_mat above...
+-                // D_block[(x - rowstart) * ldD + (y - colstart)] = 0.00001;
+-            printf("D_block[%d] = %.16f\n", (x - rowstart) * ldD + (y - colstart), D_block[(x - rowstart) * ldD + (y - colstart)]);
+-        }
+     }
+     GTM_sync(pfock->gtm_Dmat);
+ }
+@@ -132,7 +106,6 @@
+
+     if (1 == purif->runpurif)
+     {
+-        printf("compute_energy summing...\n");
+         #pragma omp parallel for reduction(+: etmp)
+         for (int i = 0; i < nrows; i++)
+         {
+@@ -215,11 +188,8 @@
+     if (myrank == 0) {
+         printf("  Computing S and X, rank=0\n");
+     }
+-    printf("MPI_wtime\n");
+     t1 = MPI_Wtime();
+-    printf("MPI_wtime after\n");
+     PFock_createOvlMat(pfock, basis);
+-    printf("PFock_createOvlMat after\n");
+     if (purif->runpurif == 1)
+     {
+         PFock_getOvlMat(pfock, srow_purif, erow_purif, scol_purif, ecol_purif,
+@@ -382,14 +352,6 @@
+         printf("  CPU uses %.3f MB\n", mem_cpu / 1024.0 / 1024.0);
+         printf("  Done\n");
+     }
+-    if (myrank == 0) {
+-        printf("Initializing pfock ...\n");
+-        int nbf = pfock->nbf;
+-        for (int i = 0; i < nbf * nbf; i++) {
+-            // Expect this to be initialized to 0...
+-            printf("pfock->D_mat[%d] = %.16f\n", i, pfock->D_mat[i]);
+-        }
+-    }
+
+     // init purif
+     purif_t *purif = create_purif(basis, nprow_purif, nprow_purif, nprow_purif);
+@@ -415,23 +377,29 @@
+     initial_guess(pfock, basis, purif->runpurif,
+                   rowstart, rowend, colstart, colend,
+                   purif->D_block, purif->ldx);
+-    // Expect D_blcok to be non-zero now
+-    if (myrank == 0) {
+-        int nbf = pfock->nbf;
+-        for (int i = 0; i < nbf * nbf; i++) {
+-            // printf("purif->F_block[%d] = %.16f\n", i, purif->F_block[i]);
+-            printf("purif->D_block[%d] = %.16f\n", i, purif->D_block[i]);
+-        }
++
++    // Missing per-element SAD files historically produced an all-zero density,
++    // which masks the Fock build and yields a nuclear-only energy. Fall back to
++    // the standard core-Hamiltonian density already available in purif->H_block.
++    double local_dnorm2 = 0.0;
++    if (purif->runpurif == 1) {
++        for (int i = 0; i < purif->nrows_purif * purif->ncols_purif; i++)
++            local_dnorm2 += purif->D_block[i] * purif->D_block[i];
++    }
++    double dnorm2 = 0.0;
++    MPI_Allreduce(&local_dnorm2, &dnorm2, 1, MPI_DOUBLE, MPI_SUM,
++                  MPI_COMM_WORLD);
++    if (dnorm2 <= DBL_MIN) {
++        if (myrank == 0)
++            printf("  SAD guess unavailable; using core-Hamiltonian guess\n");
++        compute_purification(purif, purif->H_block, purif->D_block);
+     }
+
+     // compute nuc energy
+     double ene_nuc = CInt_getNucEnergy(basis);
+     // if (myrank == 0) printf("  nuc energy = %.10f\n", ene_nuc);
+     // if (myrank == 0) printf("  nuc energy = %.10f\n", ene_nuc);
+-    printf(" rank = %d,  nuc energy = %.10f\n", myrank, ene_nuc);
+-
+-    // MPI_Barrier(MPI_COMM_WORLD);
+-    printf("%d Leaving barrier...\n", myrank);
++    if (myrank == 0) printf("  nuclear energy = %.10f\n", ene_nuc);
+     // main loop
+     double t1, t2, t3, t4;
+     for (int iter = 0; iter < niters; iter++)
+@@ -442,24 +410,11 @@
+
+         // fock matrix construction
+         t1 = MPI_Wtime();
+-        printf("rank = %d, fock build start...\n", myrank);
+-        printf("rank = %d, rowstart = %d, rowend = %d, colstart = %d, colend = %d\n", myrank, rowstart, rowend, colstart, colend);
+         fock_build(pfock, basis, purif->runpurif,
+                    rowstart, rowend, colstart, colend,
+                    purif->ldx, purif->D_block, purif->F_block);
+-        printf("rank = %d, fock build done\n", myrank);
+         // compute energy
+-        if (myrank == 0) {
+-            int nbf = pfock->nbf;
+-            for (int i = 0; i < nbf * nbf; i++) {
+-                // printf("purif->F_block[%d] = %.16f\n", i, purif->F_block[i]);
+-                printf("purif->H_block[%d] = %.16f\n", i, purif->H_block[i]);
+-                printf("purif->D_block[%d] = %.16f\n", i, purif->D_block[i]);
+-            }
+-        }
+-
+         double energy = compute_energy(purif, purif->F_block, purif->D_block);
+-        printf("rank = %d, energy computed: %.16f\n", myrank, energy);
+         t2 = MPI_Wtime();
+         if (myrank == 0) {
+             printf("    fock build takes %.3f secs\n", t2 - t1);
+@@ -473,7 +428,6 @@
+             }
+         }
+         if (iter > 0 && fabs (energy - energy0) < 1e-11) {
+-            printf("  Converged at iteration %d\n", iter);
+             niters = iter + 1;
+             break;
+         }
+@@ -542,38 +496,36 @@
+         t4 = MPI_Wtime ();
+         totaltime += t4 - t3;
+
+-// #ifdef __SCF_TIMING__
+-//         PFock_getStatistics(pfock);
+-//         double purif_timedgemm;
+-//         double purif_timepdgemm;
+-//         double purif_timepass;
+-//         double purif_timetr;
+-//         MPI_Reduce(&purif->timedgemm, &purif_timedgemm,
+-//                    1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+-//         MPI_Reduce(&purif->timepdgemm, &purif_timepdgemm,
+-//                    1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+-//         MPI_Reduce(&purif->timepass, &purif_timepass,
+-//                    1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+-//         MPI_Reduce(&purif->timetr, &purif_timetr,
+-//                    1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+-//         if (myrank == 0) {
+-//             printf("    Purification Statistics:\n");
+-//             printf("      average totaltime  = %.3f\n"
+-//                    "      average timetr     = %.3f\n"
+-//                    "      average timedgemm  = %.3f, %.3f Gflops\n"
+-//                    "      average timepdgemm = %.3f, %.3f Gflops\n",
+-//                    purif_timepass / purif->np_purif,
+-//                    purif_timetr / purif->np_purif,
+-//                    purif_timedgemm / purif->np_purif,
+-//                    (it * 2.0 + 4.0) *
+-//                    purif_flops / (purif_timedgemm / purif->np_purif) / 1e9,
+-//                    purif_timepdgemm / purif->np_purif,
+-//                    (it * 2.0 + 4.0) *
+-//                    purif_flops / (purif_timepdgemm / purif->np_purif) / 1e9);
+-//         }
+-// #endif
+-        MPI_Barrier(MPI_COMM_WORLD);
+-        printf("rank = %d, totaltime = %.2f\n", myrank, totaltime);
++#ifdef __SCF_TIMING__
++        PFock_getStatistics(pfock);
++        double purif_timedgemm;
++        double purif_timepdgemm;
++        double purif_timepass;
++        double purif_timetr;
++        MPI_Reduce(&purif->timedgemm, &purif_timedgemm,
++                   1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
++        MPI_Reduce(&purif->timepdgemm, &purif_timepdgemm,
++                   1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
++        MPI_Reduce(&purif->timepass, &purif_timepass,
++                   1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
++        MPI_Reduce(&purif->timetr, &purif_timetr,
++                   1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
++        if (myrank == 0) {
++            printf("    Purification Statistics:\n");
++            printf("      average totaltime  = %.3f\n"
++                   "      average timetr     = %.3f\n"
++                   "      average timedgemm  = %.3f, %.3f Gflops\n"
++                   "      average timepdgemm = %.3f, %.3f Gflops\n",
++                   purif_timepass / purif->np_purif,
++                   purif_timetr / purif->np_purif,
++                   purif_timedgemm / purif->np_purif,
++                   (it * 2.0 + 4.0) *
++                   purif_flops / (purif_timedgemm / purif->np_purif) / 1e9,
++                   purif_timepdgemm / purif->np_purif,
++                   (it * 2.0 + 4.0) *
++                   purif_flops / (purif_timepdgemm / purif->np_purif) / 1e9);
++        }
++#endif
+     } /* for (iter = 0; iter < NITERATIONS; iter++) */
+
+     if (myrank == 0) {
