@@ -47,8 +47,9 @@ Focused counterfactuals separated the two effects:
 3. Correct atomic primitive + the original missing-SAD input: the SCF driver
    uses a standard core-Hamiltonian fallback and converges normally.
 
-The fallback is not a constant-density mask: it purifies the already computed
-core Hamiltonian and overlap transform to obtain a physically meaningful AO
+The fallback is not a constant-density mask: it transforms the already computed
+core Hamiltonian into the orthonormal basis with the same `X` the SCF loop
+applies every pass, then purifies it, yielding a physically meaningful AO
 density.
 
 ## Confounders fixed but not blamed

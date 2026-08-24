@@ -13,6 +13,8 @@ set(GTF_GTFock_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/GTFock" CACHE PATH
     "GTFock source tree (the build script uses a patched staging copy)")
 option(GTF_BUILD_PSCF "Build the native MPI SCF executable" ON)
 option(GTF_COMBINED_JK "Accumulate Coulomb and exchange into one SCF matrix" ON)
+set(GTF_MPIEXEC_PREFLAGS "--oversubscribe" CACHE STRING
+    "mpiexec flags shared by every MPI test launch")
 
 find_package(MPI REQUIRED COMPONENTS C)
 find_package(OpenMP REQUIRED COMPONENTS C)
@@ -52,6 +54,19 @@ foreach(_mpi_library IN LISTS MPI_C_LIBRARIES)
   endif()
 endforeach()
 
+add_library(gtf_numeric INTERFACE)
+target_include_directories(gtf_numeric INTERFACE "${MKL_INCLUDE_DIR}")
+target_link_libraries(gtf_numeric INTERFACE
+  "${MKL_SCALAPACK_LIBRARY}" "${MKL_BLACS_LIBRARY}"
+  "${LAPACK_LIBRARY}" "${BLAS_LIBRARY}")
+
+# GTF_COMBINED_JK must mean the same thing in the library and in pscf: both
+# compile GTFock sources that branch on __SCF__.
+set(_gtf_jk_definitions "")
+if(GTF_COMBINED_JK)
+  list(APPEND _gtf_jk_definitions __SCF__)
+endif()
+
 function(gtf_target_defaults target)
   target_compile_options(${target} PRIVATE
     $<$<COMPILE_LANGUAGE:C>:-O3;-Wall;-Wextra;-Wno-unused-parameter;-Wno-unused-variable>
@@ -76,6 +91,8 @@ file(GLOB OED_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/OptErd_Makefile/external/oed/*.f"
   "${CMAKE_CURRENT_SOURCE_DIR}/OptErd_Makefile/external/oed/*.F")
 add_library(oed STATIC ${OED_SOURCES})
+target_include_directories(oed PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/OptErd_Makefile/external/oed>")
 target_link_libraries(oed PRIVATE OpenMP::OpenMP_C)
 gtf_target_defaults(oed)
 
@@ -133,17 +150,11 @@ target_include_directories(gtfock PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/GTMatrix>"
   "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 target_include_directories(gtfock PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/src"
-  "${MKL_INCLUDE_DIR}")
-target_compile_definitions(gtfock PRIVATE __ALIGNLEN__=64)
-if(GTF_COMBINED_JK)
-  target_compile_definitions(gtfock PRIVATE __SCF__)
-endif()
+  "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_definitions(gtfock PRIVATE __ALIGNLEN__=64 ${_gtf_jk_definitions})
 target_link_libraries(gtfock PUBLIC MPI::MPI_C)
 target_link_libraries(gtfock PRIVATE
-  cint GTMatrix simint::simint OpenMP::OpenMP_C
-  "${MKL_SCALAPACK_LIBRARY}" "${MKL_BLACS_LIBRARY}"
-  "${LAPACK_LIBRARY}" "${BLAS_LIBRARY}" m)
+  cint GTMatrix simint::simint OpenMP::OpenMP_C gtf_numeric m)
 gtf_target_defaults(gtfock)
 set_target_properties(gtfock PROPERTIES
   VERSION ${PROJECT_VERSION}
@@ -156,16 +167,11 @@ if(GTF_BUILD_PSCF)
     "${GTF_GTFock_SOURCE_DIR}/pscf/purif.c"
     "${GTF_GTFock_SOURCE_DIR}/pscf/pdgemm.c")
   target_include_directories(pscf PRIVATE
-    "${GTF_GTFock_SOURCE_DIR}/aligned_malloc"
-    "${GTF_GTFock_SOURCE_DIR}/pfock"
-    "${GTF_GTFock_SOURCE_DIR}/pscf"
-    "${CMAKE_CURRENT_SOURCE_DIR}/libcint"
-    "${CMAKE_CURRENT_SOURCE_DIR}/GTMatrix"
-    "${MKL_INCLUDE_DIR}")
+    "${GTF_GTFock_SOURCE_DIR}/pscf")
+  target_compile_definitions(pscf PRIVATE ${_gtf_jk_definitions})
   target_link_libraries(pscf PRIVATE
     gtfock cint GTMatrix simint::simint MPI::MPI_C OpenMP::OpenMP_C
-    "${MKL_SCALAPACK_LIBRARY}" "${MKL_BLACS_LIBRARY}"
-    "${LAPACK_LIBRARY}" "${BLAS_LIBRARY}" m)
+    gtf_numeric m)
   gtf_target_defaults(pscf)
   set_target_properties(pscf PROPERTIES INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
 endif()
@@ -189,17 +195,23 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" -E env
       "OMP_NUM_THREADS=1"
       "MKL_NUM_THREADS=1"
-      "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" 2
+      "${MPIEXEC_EXECUTABLE}" ${GTF_MPIEXEC_PREFLAGS}
+      "${MPIEXEC_NUMPROC_FLAG}" 2
       "$<TARGET_FILE:test_overlap>"
       "${CMAKE_CURRENT_SOURCE_DIR}/GTFock/data/sto-3g.gbs"
       "${CMAKE_CURRENT_SOURCE_DIR}/GTFock/data/water.xyz")
   set_tests_properties(legacy_mpi_overlap PROPERTIES TIMEOUT 120 PROCESSORS 2)
 
   if(GTF_BUILD_PSCF)
+    set(_gtf_preflag_args "")
+    foreach(_flag IN LISTS GTF_MPIEXEC_PREFLAGS)
+      list(APPEND _gtf_preflag_args "--mpiexec-preflag=${_flag}")
+    endforeach()
     add_test(NAME pscf_numerical_regression
       COMMAND "${Python_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pscf_regression.py"
         --mpiexec "${MPIEXEC_EXECUTABLE}"
+        ${_gtf_preflag_args}
         --pscf "$<TARGET_FILE:pscf>"
         --root "${CMAKE_CURRENT_SOURCE_DIR}")
     set_tests_properties(pscf_numerical_regression PROPERTIES

@@ -16,13 +16,17 @@ ENERGY_ATOL = 1.0e-9  # hartree; fixed-rank/thread path normally agrees < 1e-10
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mpiexec", required=True)
+    parser.add_argument("--mpiexec-preflag", action="append")
     parser.add_argument("--pscf", required=True)
     parser.add_argument("--root", type=Path, required=True)
     args = parser.parse_args()
 
+    preflags = args.mpiexec_preflag
+    if preflags is None:
+        preflags = ["--oversubscribe"]
     command = [
         args.mpiexec,
-        "--oversubscribe",
+        *preflags,
         "-n",
         "2",
         args.pscf,

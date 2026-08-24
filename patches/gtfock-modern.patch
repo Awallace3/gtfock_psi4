@@ -278,7 +278,7 @@
 
      // init purif
      purif_t *purif = create_purif(basis, nprow_purif, nprow_purif, nprow_purif);
-@@ -415,23 +377,29 @@
+@@ -415,23 +377,33 @@
      initial_guess(pfock, basis, purif->runpurif,
                    rowstart, rowend, colstart, colend,
                    purif->D_block, purif->ldx);
@@ -304,7 +304,11 @@
 +    if (dnorm2 <= DBL_MIN) {
 +        if (myrank == 0)
 +            printf("  SAD guess unavailable; using core-Hamiltonian guess\n");
-+        compute_purification(purif, purif->H_block, purif->D_block);
++        if (purif->runpurif == 1)
++            memcpy(purif->F_block, purif->H_block,
++                   sizeof(double) * purif->meshsize);
++        compute_diis(pfock, purif, purif->D_block, purif->F_block, 0);
++        compute_purification(purif, purif->F_block, purif->D_block);
      }
 
      // compute nuc energy
@@ -319,7 +323,7 @@
      // main loop
      double t1, t2, t3, t4;
      for (int iter = 0; iter < niters; iter++)
-@@ -442,24 +410,11 @@
+@@ -442,24 +414,11 @@
 
          // fock matrix construction
          t1 = MPI_Wtime();
@@ -344,7 +348,7 @@
          t2 = MPI_Wtime();
          if (myrank == 0) {
              printf("    fock build takes %.3f secs\n", t2 - t1);
-@@ -473,7 +428,6 @@
+@@ -473,7 +432,6 @@
              }
          }
          if (iter > 0 && fabs (energy - energy0) < 1e-11) {
@@ -352,7 +356,7 @@
              niters = iter + 1;
              break;
          }
-@@ -542,38 +496,36 @@
+@@ -542,38 +500,36 @@
          t4 = MPI_Wtime ();
          totaltime += t4 - t3;
 
