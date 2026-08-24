@@ -6,6 +6,7 @@ import argparse
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 
 
@@ -19,7 +20,10 @@ def main() -> None:
     parser.add_argument("--mpiexec-preflag", action="append")
     parser.add_argument("--pscf", required=True)
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--timeout", type=float, default=30.0)
     args = parser.parse_args()
+    if args.timeout <= 0:
+        parser.error("--timeout must be positive")
 
     preflags = args.mpiexec_preflag
     if preflags is None:
@@ -40,30 +44,42 @@ def main() -> None:
     ]
     env = os.environ.copy()
     env.update(OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1")
-    completed = subprocess.run(
+    process = subprocess.Popen(
         command,
         env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        timeout=120,
-        check=False,
+        start_new_session=True,
     )
-    if completed.returncode != 0:
+    try:
+        output, _ = process.communicate(timeout=args.timeout)
+    except subprocess.TimeoutExpired:
+        # mpirun and every local rank inherit this process group. Terminate the
+        # whole group so a failed regression cannot leave MPI ranks orphaned.
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            output, _ = process.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            output, _ = process.communicate()
         raise AssertionError(
-            f"pscf exited {completed.returncode}\n{completed.stdout[-6000:]}"
+            f"pscf exceeded {args.timeout:g} second limit\n{output[-6000:]}"
         )
-    if "SAD guess unavailable; using core-Hamiltonian guess" not in completed.stdout:
+
+    if process.returncode != 0:
+        raise AssertionError(f"pscf exited {process.returncode}\n{output[-6000:]}")
+    if "SAD guess unavailable; using core-Hamiltonian guess" not in output:
         raise AssertionError("missing-SAD counterfactual did not exercise the fallback")
 
     energies = [
         float(value)
         for value in re.findall(
-            r"^\s*energy\s+([-+0-9.eE]+)\s+\(", completed.stdout, re.MULTILINE
+            r"^\s*energy\s+([-+0-9.eE]+)\s+\(", output, re.MULTILINE
         )
     ]
     if not energies:
-        raise AssertionError(f"pscf emitted no SCF energies\n{completed.stdout[-6000:]}")
+        raise AssertionError(f"pscf emitted no SCF energies\n{output[-6000:]}")
     error = abs(energies[-1] - REFERENCE_ENERGY)
     if error > ENERGY_ATOL:
         raise AssertionError(

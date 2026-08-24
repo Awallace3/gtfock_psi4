@@ -78,7 +78,9 @@ With two OpenMPI ranks and one OpenMP thread:
   `-74.9450213019 Eh`;
 - `tests/test_pscf_regression.py` enforces `1e-9 Eh` agreement with that frozen
   converged result and fails if the missing-SAD path returns the old
-  nuclear-only energy or the Fock update hangs.
+  nuclear-only energy or the Fock update hangs. The two-rank launch has a
+  30-second wall limit and terminates the entire MPI process group on timeout,
+  preventing a failed counterfactual from leaving orphaned ranks.
 
 The overlap tolerance is near roundoff for normalized STO-3G integrals. The SCF
 energy tolerance is much tighter than chemical accuracy and allows only benign

@@ -213,7 +213,8 @@ if(BUILD_TESTING)
         --mpiexec "${MPIEXEC_EXECUTABLE}"
         ${_gtf_preflag_args}
         --pscf "$<TARGET_FILE:pscf>"
-        --root "${CMAKE_CURRENT_SOURCE_DIR}")
+        --root "${CMAKE_CURRENT_SOURCE_DIR}"
+        --timeout 30)
     set_tests_properties(pscf_numerical_regression PROPERTIES
       TIMEOUT 150 PROCESSORS 2)
   endif()
