@@ -74,7 +74,7 @@ With two OpenMPI ranks and one OpenMP thread:
 - modern and read-only-legacy GTFock/Simint overlap matrices are bitwise
   identical (`max_abs=0`); `tests/test_overlap.c` retains the legacy matrix and
   enforces `1e-13` absolute agreement and symmetry;
-- fixed GTFock RHF/STO-3G water converges in nine reported iterations to
+- fixed GTFock RHF/STO-3G water converges in eight reported iterations to
   `-74.9450213019 Eh`;
 - `tests/test_pscf_regression.py` enforces `1e-9 Eh` agreement with that frozen
   converged result and fails if the missing-SAD path returns the old

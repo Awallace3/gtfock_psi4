@@ -54,6 +54,7 @@ Simint vector backend.
 The build runs:
 
 - generated Simint tests;
+- an installed `pfock.h` public-header compile smoke test;
 - the atomic Fock-update regression;
 - a real two-rank GTFock/Simint overlap calculation against the read-only legacy
   GTFock result (`1e-13` tolerance; observed bitwise agreement);

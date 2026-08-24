@@ -202,6 +202,13 @@ if(BUILD_TESTING)
       "${CMAKE_CURRENT_SOURCE_DIR}/GTFock/data/water.xyz")
   set_tests_properties(legacy_mpi_overlap PROPERTIES TIMEOUT 120 PROCESSORS 2)
 
+  add_test(NAME installed_header_smoke
+    COMMAND "${CMAKE_COMMAND}"
+      "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+      "-DSTAGE_DIR=${CMAKE_BINARY_DIR}/install-smoke"
+      "-DMPI_C_COMPILER=${MPI_C_COMPILER}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_installed_headers.cmake")
+
   if(GTF_BUILD_PSCF)
     set(_gtf_preflag_args "")
     foreach(_flag IN LISTS GTF_MPIEXEC_PREFLAGS)
@@ -229,6 +236,8 @@ if(GTF_BUILD_PSCF)
 endif()
 install(FILES
   libcint/CInt.h
-  GTMatrix/GTMatrix.h
   "${GTF_GTFock_SOURCE_DIR}/pfock/pfock.h"
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY GTMatrix/
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  FILES_MATCHING PATTERN "*.h")
