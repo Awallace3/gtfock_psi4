@@ -20,7 +20,10 @@ the double's representation. For example, adding `1.25` to `0.0` stored the
 integer bit pattern `0x1`, which is about `4.94e-324` as a double. A subsequent
 nonzero update normally spins because the converted expected value no longer
 matches the stored double bits. `tests/test_atomic_add.c` executes this primitive
-and its concurrent OpenMP use directly.
+and its concurrent OpenMP use directly, and CMake refuses to configure a GTFock
+source tree whose `pfock/update_F.h` still performs the value conversion, so the
+tested primitive is always the one the library compiles
+(`tests/test_source_guard.cmake`).
 
 The initiating trigger was therefore the incorrect replacement bit conversion,
 not `icx` optimization. The compiler condition was that Intel classic supplied

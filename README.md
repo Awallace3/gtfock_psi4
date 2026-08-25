@@ -6,6 +6,9 @@ optional Psi4/mpi4py integration is intentionally out of scope.
 
 The superproject pins every source submodule. The build applies the reviewed
 modern-compiler patch to a disposable copy, leaving pinned submodules unchanged.
+Configuring against a GTFock tree that still has the uncorrected Fock update is
+rejected at configure time, so the pinned submodule is never compiled by
+accident; `build_deps.sh` selects the corrected copy for you.
 
 ## Create the `gtf2` environment
 
@@ -55,6 +58,7 @@ The build runs:
 
 - generated Simint tests;
 - an installed `pfock.h` public-header compile smoke test;
+- a configure-time refusal of GTFock sources without the corrected atomic;
 - the atomic Fock-update regression;
 - a real two-rank GTFock/Simint overlap calculation against the read-only legacy
   GTFock result (`1e-13` tolerance; observed bitwise agreement);

@@ -16,6 +16,47 @@ option(GTF_COMBINED_JK "Accumulate Coulomb and exchange into one SCF matrix" ON)
 set(GTF_MPIEXEC_PREFLAGS "--oversubscribe" CACHE STRING
     "mpiexec flags shared by every MPI test launch")
 
+# Pinned submodules stay unpatched, so the default source directory is only a
+# starting point: compiling it as-is reproduces the value-converting
+# compare-and-swap in pfock/update_F.h that docs/numerical-root-cause.md
+# identifies as the initiating numerical bug. Refuse any tree whose Fock update
+# is not a bitwise atomic add, so every entry point - not just build_deps.sh -
+# holds the invariant that the compiled tree is a corrected tree.
+set(_gtf_source_help
+  "Run ./build_deps.sh: it stages patches/gtfock-modern.patch into \
+_build/gtfock-src and configures this project with -DGTF_GTFock_SOURCE_DIR set \
+to that corrected copy. To build a different tree, pass \
+-DGTF_GTFock_SOURCE_DIR=<path> explicitly.")
+set(_gtf_update_f "${GTF_GTFock_SOURCE_DIR}/pfock/update_F.h")
+if(NOT EXISTS "${_gtf_update_f}")
+  message(FATAL_ERROR
+    "No GTFock sources in ${GTF_GTFock_SOURCE_DIR}: pfock/update_F.h is missing.\n"
+    "Initialize the pinned sources with "
+    "'git submodule update --init --recursive'.\n"
+    "${_gtf_source_help}")
+endif()
+file(READ "${_gtf_update_f}" _gtf_update_f_text)
+# The pinned tree still names the classic intrinsic in comments, so match code.
+string(REGEX REPLACE "/\\*[^*]*\\*+([^/*][^*]*\\*+)*/" " "
+  _gtf_update_f_code "${_gtf_update_f_text}")
+string(REGEX REPLACE "//[^\n]*" " " _gtf_update_f_code "${_gtf_update_f_code}")
+set(_gtf_bitwise_atomic OFF)
+if(_gtf_update_f_code MATCHES "#[ \t]*include[ \t]*\"gtfock_atomic\\.h\"")
+  set(_gtf_bitwise_atomic ON)
+elseif(_gtf_update_f_code MATCHES "_castf64_u64[ \t]*\\(")
+  set(_gtf_bitwise_atomic ON)
+endif()
+if(_gtf_update_f_code MATCHES "\\([ \t]*uint64_t[ \t]*\\)[ \t]*\\(?[ \t]*old_value")
+  set(_gtf_bitwise_atomic OFF)
+endif()
+if(NOT _gtf_bitwise_atomic)
+  message(FATAL_ERROR
+    "${_gtf_update_f} converts the Fock accumulator to an integer instead of "
+    "reinterpreting its bits, so building this tree reproduces the numerical "
+    "failure analyzed in docs/numerical-root-cause.md.\n"
+    "${_gtf_source_help}")
+endif()
+
 find_package(MPI REQUIRED COMPONENTS C)
 find_package(OpenMP REQUIRED COMPONENTS C)
 find_package(simint 0.8 CONFIG REQUIRED)
@@ -201,6 +242,16 @@ if(BUILD_TESTING)
       "${CMAKE_CURRENT_SOURCE_DIR}/GTFock/data/sto-3g.gbs"
       "${CMAKE_CURRENT_SOURCE_DIR}/GTFock/data/water.xyz")
   set_tests_properties(legacy_mpi_overlap PROPERTIES TIMEOUT 120 PROCESSORS 2)
+
+  add_test(NAME unpatched_source_rejected
+    COMMAND "${CMAKE_COMMAND}"
+      "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+      "-DWORK_DIR=${CMAKE_BINARY_DIR}/source-guard"
+      "-DC_COMPILER=${CMAKE_C_COMPILER}"
+      "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+      "-DFortran_COMPILER=${CMAKE_Fortran_COMPILER}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_source_guard.cmake")
+  set_tests_properties(unpatched_source_rejected PROPERTIES TIMEOUT 300)
 
   add_test(NAME installed_header_smoke
     COMMAND "${CMAKE_COMMAND}"
