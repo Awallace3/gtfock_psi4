@@ -5,7 +5,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Use `env.yml` (audited direct constraints) or `conda-linux-64.lock` (exact Linux solve); the supported C/C++ toolchain is conda-forge IntelLLVM `icx`/`icpx` with OpenMPI.
 - The canonical clean validation is `CMAKE_BUILD_PARALLEL_LEVEL=12 ./build_deps.sh --clean`; it builds through CMake and runs Simint plus native MPI/numerical regressions.
 - Pinned submodules stay immutable. `build_deps.sh` applies `patches/gtfock-modern.patch` to `_build/gtfock-src`; numerical causality and counterfactual evidence are in `docs/numerical-root-cause.md`.
-- This repository milestone is the native GTFock foundation. Optional Psi4/mpi4py integration is intentionally handled separately; see `README.md`.
+- The local package gate is `./conda/build-local.sh`; it builds the artifact, runs installed CMake/MPI tests, and validates a fresh CPU-only install. Submission blockers and the OpenMPI solver-only CUDA metadata workaround are keyed in `docs/conda-packaging.md`.
+- This repository milestone is the native GTFock foundation and installable CMake interface. Optional Psi4/mpi4py integration implementation is handled separately; see `README.md`.
 
 ## Maintaining this file
 

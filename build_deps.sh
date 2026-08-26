@@ -29,34 +29,65 @@ while (($#)); do
     shift
 done
 
-if [[ -z ${CONDA_PREFIX:-} ]]; then
-    echo "Activate the gtf2 conda environment before building." >&2
+CONDA_ROOTS=()
+for prefix in "${CONDA_PREFIX:-}" "${PREFIX:-}" "${BUILD_PREFIX:-}"; do
+    if [[ -n $prefix ]]; then
+        CONDA_ROOTS+=("$(cd "$prefix" && pwd -P)")
+    fi
+done
+if ((${#CONDA_ROOTS[@]} == 0)); then
+    echo "Activate the supported conda environment or run through conda-build." >&2
     exit 2
 fi
 
+path_is_in_conda() {
+    local path=$1 prefix
+    for prefix in "${CONDA_ROOTS[@]}"; do
+        [[ $path == "$prefix"/* ]] && return 0
+    done
+    return 1
+}
+
 for tool in cmake ninja python git icx icpx mpicc mpirun; do
     path=$(command -v "$tool" || true)
-    if [[ -z $path || $path != "$CONDA_PREFIX"/* ]]; then
-        echo "$tool must come from the active conda environment (found: ${path:-missing})." >&2
+    if [[ -z $path ]] || ! path_is_in_conda "$(readlink -f "$path")"; then
+        echo "$tool must come from a supported conda prefix (found: ${path:-missing})." >&2
         exit 2
     fi
 done
 
-CC=$(command -v icx)
-CXX=$(command -v icpx)
-FC=${FC:-"$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-gfortran"}
-if [[ ! -x $FC || $FC != "$CONDA_PREFIX"/* ]]; then
-    echo "Fortran compiler must come from the active conda environment: $FC" >&2
+CC=$(readlink -f "$(command -v icx)")
+CXX=$(readlink -f "$(command -v icpx)")
+if [[ -z ${FC:-} ]]; then
+    for prefix in "${BUILD_PREFIX:-}" "${CONDA_PREFIX:-}"; do
+        candidate=${prefix:+"$prefix/bin/x86_64-conda-linux-gnu-gfortran"}
+        if [[ -n $candidate && -x $candidate ]]; then
+            FC=$candidate
+            break
+        fi
+    done
+fi
+FC=${FC:-}
+if [[ ! -x $FC ]] || ! path_is_in_conda "$(readlink -f "$FC")"; then
+    echo "GNU Fortran must come from a supported conda prefix: ${FC:-missing}" >&2
     exit 2
 fi
 
-if git -C "$ROOT" submodule status | grep -q '^-'; then
-    echo "Initialize pinned sources first: git submodule update --init --recursive" >&2
+if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if git -C "$ROOT" submodule status | grep -q '^-'; then
+        echo "Initialize pinned sources first: git submodule update --init --recursive" >&2
+        exit 2
+    fi
+elif [[ ${GTF_PINNED_SOURCE_ARCHIVES:-0} != 1 ]]; then
+    echo "Source archives require GTF_PINNED_SOURCE_ARCHIVES=1 from the pinned recipe." >&2
     exit 2
 fi
 
 if [[ $CLEAN == ON ]]; then
-    rm -rf -- "$BUILD_ROOT" "$INSTALL_PREFIX"
+    rm -rf -- "$BUILD_ROOT"
+    if [[ ${GTF_PRESERVE_INSTALL_PREFIX:-0} != 1 ]]; then
+        rm -rf -- "$INSTALL_PREFIX"
+    fi
 fi
 mkdir -p -- "$BUILD_ROOT" "$INSTALL_PREFIX"
 
@@ -108,11 +139,17 @@ rm -f -- "$GTF_SOURCE/.git"
 )
 
 echo "==> Configuring GTFock with icx/icpx and conda OpenMPI"
+PREFIX_PATHS=("$INSTALL_PREFIX")
+for prefix in "${PREFIX:-}" "${CONDA_PREFIX:-}"; do
+    [[ -n $prefix ]] && PREFIX_PATHS+=("$prefix")
+done
+CMAKE_PREFIXES=$(IFS=';'; echo "${PREFIX_PATHS[*]}")
+
 cmake -S "$ROOT" -B "$BUILD_ROOT/gtfock" \
     "${configure_common[@]}" \
     -DCMAKE_Fortran_COMPILER="$FC" \
     -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
-    -DCMAKE_PREFIX_PATH="$INSTALL_PREFIX;$CONDA_PREFIX" \
+    -DCMAKE_PREFIX_PATH="$CMAKE_PREFIXES" \
     -DGTF_GTFock_SOURCE_DIR="$GTF_SOURCE" \
     -DBUILD_TESTING="$RUN_TESTS"
 cmake --build "$BUILD_ROOT/gtfock" --parallel "$JOBS"

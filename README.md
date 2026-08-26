@@ -1,8 +1,9 @@
 # gtfock_psi4: GTFock foundation
 
-Reproducible conda-forge Linux build of GTFock with Intel oneAPI LLVM
-(`icx`/`icpx`) and OpenMPI. This milestone covers the native GTFock foundation;
-optional Psi4/mpi4py integration is intentionally out of scope.
+Reproducible conda-forge-compatible Linux build of GTFock with Intel oneAPI
+LLVM (`icx`/`icpx`) and OpenMPI. This repository provides the native GTFock
+foundation and an installable CMake interface for optional Psi4 consumption;
+the Psi4/mpi4py integration implementation remains separate.
 
 The superproject pins every source submodule. The build applies the reviewed
 modern-compiler patch to a disposable copy, leaving pinned submodules unchanged.
@@ -76,6 +77,28 @@ Run the native SCF path with:
 ```bash
 OMP_NUM_THREADS=1 mpirun --oversubscribe -n 2 _install/bin/pscf \
   GTFock/data/sto-3g.gbs GTFock/data/water.xyz 2 1 1 2 15
+```
+
+## Local conda artifact and CMake consumption
+
+Build and validate a local package, including a fresh CPU-only install and an
+installed two-rank numerical execution:
+
+```bash
+./conda/build-local.sh
+```
+
+The package has no CUDA dependency or linkage. A solver-only virtual-package
+override is documented and automatically checked because the pinned upstream
+OpenMPI artifact advertises optional CUDA awareness. See
+[`docs/conda-packaging.md`](docs/conda-packaging.md) for artifact installation,
+source/license provenance, feedstock preparation, and blocking policy keys.
+
+External consumers use the relocatable package target:
+
+```cmake
+find_package(GTFock 0.1 CONFIG REQUIRED)
+target_link_libraries(my_optional_component PRIVATE GTFock::GTFock)
 ```
 
 ## Numerical root cause
