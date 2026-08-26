@@ -1,0 +1,96 @@
+{% set name = "gtfock" %}
+{% set version = "0.1.0" %}
+{% set source_path = environ.get("GTF_CONDA_SOURCE_PATH", "../..") %}
+
+package:
+  name: {{ name }}
+  version: {{ version }}
+
+# Local validation uses a clean source snapshot prepared by
+# conda/build-local.sh. Before staged-recipes submission, replace this block
+# with the checksummed archive list in source-provenance.yaml.
+source:
+  path: {{ source_path }}
+
+build:
+  number: 0
+  skip: true  # [not linux64]
+  string: mpi_openmpi_intelllvm_{{ PKG_BUILDNUM }}
+  run_exports:
+    - {{ pin_subpackage(name, max_pin='x.x') }}
+
+requirements:
+  build:
+    - cmake ==3.31.6 =h74e3db0_0
+    - ninja
+    - python 3.12.*
+    - git
+    # IntelLLVM is deliberate: this is the validated compiler, not a
+    # substitution for conda-forge's default compiler() macro.
+    - dpcpp_linux-64 ==2025.3.1 =hf83752f_760
+    - gfortran_linux-64 ==14.3.0 =h367af21_28
+  host:
+    - mpi 1.0 openmpi
+    # These build pins preserve the audited 2025 solve. Newer OpenMPI 5.0.8
+    # builds are incompatible with this Intel runtime/hwloc combination.
+    - openmpi ==5.0.8 =h2fe1745_110
+    - libhwloc ==2.12.1 =default_hafda6a7_1003
+    - tbb ==2022.3.0 =h8d10470_1
+    - mkl-devel ==2025.3.1 =ha770c72_12
+    - libblas ==3.11.0 =6_h5875eb1_mkl
+    - liblapack ==3.11.0 =6_h5e43f62_mkl
+    - llvm-openmp ==22.1.8 =h3206bd6_1
+  run:
+    - mpi 1.0 openmpi
+    - openmpi >=5.0.8,<6.0a0
+    - libhwloc >=2.12.1,<2.12.2.0a0
+    - tbb >=2022.3.0,<2022.4.0a0
+    - mkl ==2025.3.1
+    - libblas ==3.11.0 *_mkl
+    - liblapack ==3.11.0 *_mkl
+    - llvm-openmp ==22.1.8 =h3206bd6_1
+
+# conda-build creates a fresh test prefix containing the built artifact plus
+# only these test requirements.
+test:
+  source_files:
+    - tests/package-consumer/*
+    - tests/test_pscf_regression.py
+    - GTFock/data/sto-3g.gbs
+    - GTFock/data/water.xyz
+  requires:
+    - cmake ==3.31.6 =h74e3db0_0
+    - ninja
+    - python 3.12.*
+    - gcc_linux-64
+    - binutils
+  commands:
+    - bash "${RECIPE_DIR}/run_test.sh"
+
+about:
+  home: https://github.com/Awallace3/gtfock_psi4
+  summary: Validated IntelLLVM/OpenMPI native GTFock runtime
+  description: >-
+    GTFock, GTMatrix, libcint, generated Simint, and the native MPI SCF driver,
+    built with the validated IntelLLVM/OpenMPI/MKL stack. Public distribution
+    remains blocked by the recorded upstream GTFock license decision.
+  license: GPL-2.0-or-later AND LGPL-2.1-or-later AND BSD-3-Clause AND LicenseRef-GTFock-undetermined
+  license_family: GPL
+  license_file:
+    - conda/recipe/licenses/GPL-2.0-or-later.txt
+    - GTMatrix/LICENSE
+    - simint-generator/LICENSE
+    - conda/recipe/licenses/GTFock-license-status.txt
+  dev_url: https://github.com/Awallace3/gtfock_psi4
+  doc_url: https://github.com/Awallace3/gtfock_psi4/blob/master/docs/conda-packaging.md
+
+extra:
+  recipe-maintainers:
+    - Awallace3
+  validated_stack:
+    c_compiler: IntelLLVM 2025.3.1
+    cxx_compiler: IntelLLVM 2025.3.1
+    fortran_compiler: GNU 14.3.0
+    mpi: OpenMPI 5.0.8
+    mkl: 2025.3.1
+    simint_vector: avx2
