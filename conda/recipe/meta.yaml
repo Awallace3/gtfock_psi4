@@ -54,6 +54,7 @@ requirements:
 # only these test requirements.
 test:
   source_files:
+    - conda/recipe/grep-assert.sh
     - tests/package-consumer/*
     - tests/test_pscf_regression.py
   requires:

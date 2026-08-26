@@ -2,8 +2,11 @@
 set -euo pipefail
 set -x
 
+# conda-build copies declared test.source_files into the test working tree;
+# run_test.sh itself is copied separately, so its own directory is not a
+# reliable location for helper scripts.
 # shellcheck source=conda/recipe/grep-assert.sh
-source "$(dirname -- "${BASH_SOURCE[0]}")/grep-assert.sh"
+source "$PWD/conda/recipe/grep-assert.sh"
 
 for path in \
     "$PREFIX/bin/pscf" \
@@ -48,13 +51,16 @@ gtf_grep_absent "gtfock package metadata unexpectedly mentions CUDA" \
 # build-time strings are asserted by build.sh, where they are authoritative.
 # Assert here the property a leaked build or source directory would violate:
 # every runtime search path is $ORIGIN-relative or inside the installed prefix.
+# Match CUDA-family shared-library basenames rather than the substring "cuda",
+# which also occurs inside unrelated ICU's libicudata.so.
+cuda_link_pattern='(^|[[:space:]/])(libcuda|libcudart|libcublas|libcufft|libcurand|libcusolver|libcusparse|libnv[^[:space:]/]*|libnvidia[^[:space:]/]*|libnccl)[^[:space:]/]*\.so'
 for binary in "$PREFIX/bin/pscf" "$PREFIX/lib/libgtfock.so" "$PREFIX/lib/libcint.so"; do
     report=$(basename "$binary")
     ldd "$binary" | tee "$report.ldd"
     gtf_grep_absent "$binary has unresolved libraries" \
         -F -e "not found" -- "$report.ldd"
     gtf_grep_absent "$binary has CUDA dynamic linkage" \
-        -i -e cuda -- "$report.ldd"
+        -E -i -e "$cuda_link_pattern" -- "$report.ldd"
     readelf -d "$binary" | tee "$report.dynamic"
     search_paths=$(sed -n 's/.*(R[A-Z]*PATH).*\[\(.*\)\]/\1/p' "$report.dynamic" \
         | tr '\n' ':')

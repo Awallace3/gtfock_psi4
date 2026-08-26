@@ -21,6 +21,18 @@ for _tool in CC CXX FC; do
     fi
 done
 export CC CXX FC
+
+# libcint diagnostics embed __FILE__ in both C and Fortran objects. Preserve
+# useful, stable source locations without leaking conda-build's temporary work
+# directory into the installed shared library.
+source_map_flags="-ffile-prefix-map=$SRC_DIR=/usr/src/gtfock -fdebug-prefix-map=$SRC_DIR=/usr/src/gtfock"
+export CFLAGS="${CFLAGS:+$CFLAGS }$source_map_flags"
+export CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }$source_map_flags"
+# CMake's Ninja Fortran scanner preprocesses absolute source operands into
+# intermediate files. Suppress their #line markers so gfortran cannot retain
+# the original temporary filename after applying the prefix maps.
+export FFLAGS="${FFLAGS:+$FFLAGS }$source_map_flags -P"
+
 export OMPI_CC="$CC"
 export OMPI_CXX="$CXX"
 export OMPI_FC="$FC"
@@ -75,8 +87,12 @@ if [[ ! -s $simint_manifest ]]; then
     exit 1
 fi
 simint_artifacts=()
-while IFS= read -r path; do
+while IFS= read -r path || [[ -n $path ]]; do
     [[ -n $path ]] || continue
+    # CMake install manifests may contain redundant separators (for example
+    # include//simint). Normalize them so parent directories are deduplicated
+    # and pruned in a deterministic deepest-first order below.
+    path=$(realpath -m -- "$path")
     if [[ $path != "$PREFIX"/* ]]; then
         echo "Simint install manifest lists $path outside \$PREFIX" >&2
         exit 1
@@ -112,7 +128,13 @@ for path in "${simint_artifacts[@]}"; do
 done
 while IFS= read -r directory; do
     rmdir --ignore-fail-on-non-empty -- "$directory" 2>/dev/null || true
-done < <(printf '%s\n' "${simint_directories[@]}" | sort -u -r)
+done < <(
+    printf '%s\n' "${simint_directories[@]}" |
+        awk '{ print length($0), $0 }' |
+        sort -k1,1nr -k2,2r |
+        cut -d' ' -f2- |
+        awk '!seen[$0]++'
+)
 for path in "${simint_artifacts[@]}"; do
     if [[ -e $path ]]; then
         echo "Simint artifact survived removal: $path" >&2

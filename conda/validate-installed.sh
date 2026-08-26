@@ -52,6 +52,9 @@ test -n "$package_metadata"
 gtf_grep_absent "gtfock package metadata unexpectedly mentions CUDA" \
     -i -e cuda -- "$package_metadata"
 
+# Match CUDA-family shared-library basenames rather than the substring "cuda",
+# which also occurs inside unrelated ICU's libicudata.so.
+cuda_link_pattern='(^|[[:space:]/])(libcuda|libcudart|libcublas|libcufft|libcurand|libcusolver|libcusparse|libnv[^[:space:]/]*|libnvidia[^[:space:]/]*|libnccl)[^[:space:]/]*\.so'
 for binary in "$FRESH_PREFIX/bin/pscf" \
               "$FRESH_PREFIX/lib/libgtfock.so" \
               "$FRESH_PREFIX/lib/libcint.so"; do
@@ -60,7 +63,7 @@ for binary in "$FRESH_PREFIX/bin/pscf" \
     gtf_grep_absent "$binary has unresolved libraries" \
         -F -e "not found" <<<"$links"
     gtf_grep_absent "$binary has CUDA dynamic linkage" \
-        -i -e cuda <<<"$links"
+        -E -i -e "$cuda_link_pattern" <<<"$links"
 done
 
 # Run the single numerical oracle against the installed example data, so the
