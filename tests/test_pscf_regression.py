@@ -19,11 +19,20 @@ def main() -> None:
     parser.add_argument("--mpiexec", required=True)
     parser.add_argument("--mpiexec-preflag", action="append")
     parser.add_argument("--pscf", required=True)
-    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--root", type=Path, help="source tree holding GTFock/data")
+    parser.add_argument("--data-dir", type=Path, help="installed example data directory")
     parser.add_argument("--timeout", type=float, default=30.0)
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
+    if (args.root is None) == (args.data_dir is None):
+        parser.error("pass exactly one of --root or --data-dir")
+    data_dir = args.data_dir if args.data_dir is not None else args.root / "GTFock/data"
+    basis = data_dir / "sto-3g.gbs"
+    geometry = data_dir / "water.xyz"
+    for path in (basis, geometry):
+        if not path.is_file():
+            parser.error(f"missing pscf input {path}")
 
     preflags = args.mpiexec_preflag
     if preflags is None:
@@ -34,8 +43,8 @@ def main() -> None:
         "-n",
         "2",
         args.pscf,
-        str(args.root / "GTFock/data/sto-3g.gbs"),
-        str(args.root / "GTFock/data/water.xyz"),
+        str(basis),
+        str(geometry),
         "2",
         "1",
         "1",

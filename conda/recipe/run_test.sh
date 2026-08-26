@@ -37,16 +37,27 @@ package_metadata=$(find "$PREFIX/conda-meta" -maxdepth 1 -name 'gtfock-*.json' -
 test -n "$package_metadata"
 ! grep -i cuda "$package_metadata"
 
+# conda-build re-points SRC_DIR and BUILD_PREFIX for this phase, so the exact
+# build-time strings are asserted by build.sh, where they are authoritative.
+# Assert here the property a leaked build or source directory would violate:
+# every runtime search path is $ORIGIN-relative or inside the installed prefix.
 for binary in "$PREFIX/bin/pscf" "$PREFIX/lib/libgtfock.so" "$PREFIX/lib/libcint.so"; do
-    ldd "$binary" | tee "$(basename "$binary").ldd"
-    ! grep -q "not found" "$(basename "$binary").ldd"
-    ! grep -i cuda "$(basename "$binary").ldd"
-    readelf -d "$binary" | tee "$(basename "$binary").dynamic"
-    ! grep -F -e "${SRC_DIR:-__unset_src_dir__}" \
-              -e "${BUILD_PREFIX:-__unset_build_prefix__}" \
-              "$(basename "$binary").dynamic"
+    report=$(basename "$binary")
+    ldd "$binary" | tee "$report.ldd"
+    ! grep -q "not found" "$report.ldd"
+    ! grep -i cuda "$report.ldd"
+    readelf -d "$binary" | tee "$report.dynamic"
+    search_paths=$(sed -n 's/.*(R[A-Z]*PATH).*\[\(.*\)\]/\1/p' "$report.dynamic" \
+        | tr '\n' ':')
+    IFS=':' read -r -a search_path_list <<<"$search_paths"
+    for search_path in "${search_path_list[@]}"; do
+        [[ -n $search_path ]] || continue
+        case "$search_path" in
+            '$ORIGIN'|'$ORIGIN'/*|"$PREFIX"|"$PREFIX"/*) ;;
+            *)
+                echo "$binary searches $search_path outside the installed prefix" >&2
+                exit 1
+                ;;
+        esac
+    done
 done
-
-! grep -R -F -e "${SRC_DIR:-__unset_src_dir__}" \
-              -e "${BUILD_PREFIX:-__unset_build_prefix__}" \
-              "$PREFIX/lib/cmake/GTFock"

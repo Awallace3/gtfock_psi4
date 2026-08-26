@@ -25,10 +25,66 @@ while IFS= read -r -d '' path; do
     fi
 done < <(git -C "$ROOT" ls-files --cached --others --exclude-standard -z)
 
-while read -r _commit path _rest; do
-    mkdir -p -- "$SOURCE_SNAPSHOT/$path"
-    git -C "$ROOT/$path" archive HEAD | tar -x -C "$SOURCE_SNAPSHOT/$path"
-done < <(git -C "$ROOT" submodule status --recursive | sed 's/^[ +-U]//')
+# Every packaged submodule tree must be exactly the pinned gitlink, because
+# conda/recipe/source-provenance.yaml records those commits as the artifact's
+# component versions. Snapshot the gitlink commit itself (not the submodule's
+# checked-out HEAD), and refuse to build when a checkout has drifted away from
+# its pin or when a pin no longer matches the recorded provenance.
+PROVENANCE="$ROOT/conda/recipe/source-provenance.yaml"
+declare -A PINNED_COMPONENTS=()
+while read -r component commit; do
+    PINNED_COMPONENTS["$component"]=$commit
+done < <(awk '
+    /^component_versions:/ { in_block = 1; next }
+    in_block && /^[^[:space:]#]/ { in_block = 0 }
+    in_block && $1 ~ /:$/ { key = $1; sub(/:$/, "", key); print key, $2 }
+' "$PROVENANCE")
+unset 'PINNED_COMPONENTS[superproject]'
+
+declare -A SNAPSHOT_COMPONENTS=()
+
+snapshot_submodules() {
+    local repo=$1 parent=$2
+    local metadata path relative pinned checked_out recorded
+    while IFS=$'\t' read -r metadata path; do
+        [[ $metadata == 160000\ * ]] || continue
+        pinned=$(cut -d' ' -f2 <<<"$metadata")
+        relative=${parent:+$parent/}$path
+        if ! git -C "$repo/$path" rev-parse --git-dir >/dev/null 2>&1; then
+            echo "Submodule $relative is not initialized:" \
+                 "run 'git submodule update --init --recursive'." >&2
+            exit 2
+        fi
+        checked_out=$(git -C "$repo/$path" rev-parse HEAD)
+        if [[ $checked_out != "$pinned" ]]; then
+            echo "Submodule $relative is checked out at $checked_out but the" \
+                 "superproject pins $pinned; run 'git submodule update" \
+                 "--init --recursive' before packaging." >&2
+            exit 2
+        fi
+        recorded=${PINNED_COMPONENTS[$path]:-}
+        if [[ -n $recorded && $recorded != "$pinned" ]]; then
+            echo "Submodule $relative is pinned at $pinned but" \
+                 "source-provenance.yaml records $recorded." >&2
+            exit 2
+        fi
+        SNAPSHOT_COMPONENTS["$path"]=$pinned
+        mkdir -p -- "$SOURCE_SNAPSHOT/$relative"
+        git -C "$repo/$path" archive "$pinned" \
+            | tar -x -C "$SOURCE_SNAPSHOT/$relative"
+        snapshot_submodules "$repo/$path" "$relative"
+    done < <(git -C "$repo" ls-files --stage)
+}
+
+snapshot_submodules "$ROOT" ""
+
+for component in "${!PINNED_COMPONENTS[@]}"; do
+    if [[ -z ${SNAPSHOT_COMPONENTS[$component]:-} ]]; then
+        echo "source-provenance.yaml records component $component, but no" \
+             "such pinned submodule was snapshotted." >&2
+        exit 2
+    fi
+done
 
 mkdir -p -- "$PKG_CACHE" "$OUTPUT_DIR"
 rm -f -- "$OUTPUT_DIR/linux-64"/gtfock-*.conda \

@@ -62,19 +62,35 @@ find_package(MPI REQUIRED COMPONENTS C)
 find_package(OpenMP REQUIRED COMPONENTS C)
 find_package(simint 0.8 CONFIG REQUIRED)
 
-# Search only conda's active build/host prefixes for numerical libraries. A
-# normal developer environment uses CONDA_PREFIX; conda-build intentionally
-# splits compilers into BUILD_PREFIX and link dependencies into PREFIX.
+# Search only the active conda host prefix for numerical libraries. A developer
+# environment uses CONDA_PREFIX, while conda-build splits compilers into
+# BUILD_PREFIX and link dependencies into PREFIX. Those two are honored only
+# when conda-build is actually driving the configure, so that a stray PREFIX
+# export in a developer shell can neither widen the search nor widen the
+# allow-list below - that would silently mix conda MPI with host BLAS, LAPACK,
+# or ScaLAPACK. BUILD_PREFIX holds compilers only and never supplies a
+# numerical library.
+set(_gtf_conda_build OFF)
+if((NOT "$ENV{CONDA_BUILD}" STREQUAL "" OR NOT "$ENV{CONDA_BUILD_STATE}" STREQUAL "")
+   AND NOT "$ENV{PREFIX}" STREQUAL "" AND NOT "$ENV{BUILD_PREFIX}" STREQUAL "")
+  set(_gtf_conda_build ON)
+endif()
+set(_gtf_host_prefixes "")
+set(_gtf_tool_prefixes "")
+if(_gtf_conda_build)
+  list(APPEND _gtf_host_prefixes "$ENV{PREFIX}")
+  list(APPEND _gtf_tool_prefixes "$ENV{BUILD_PREFIX}")
+elseif(NOT "$ENV{CONDA_PREFIX}" STREQUAL "")
+  list(APPEND _gtf_host_prefixes "$ENV{CONDA_PREFIX}")
+  list(APPEND _gtf_tool_prefixes "$ENV{CONDA_PREFIX}")
+endif()
+if(NOT _gtf_host_prefixes)
+  message(FATAL_ERROR
+    "Activate the supported conda environment (or build through conda-build)")
+endif()
 set(_gtf_prefix_hints ${CMAKE_PREFIX_PATH})
-set(_gtf_allowed_prefixes "")
-foreach(_prefix_var IN ITEMS CONDA_PREFIX PREFIX BUILD_PREFIX)
-  if(DEFINED ENV{${_prefix_var}} AND NOT "$ENV{${_prefix_var}}" STREQUAL "")
-    list(PREPEND _gtf_prefix_hints "$ENV{${_prefix_var}}")
-    list(APPEND _gtf_allowed_prefixes "$ENV{${_prefix_var}}")
-  endif()
-endforeach()
+list(PREPEND _gtf_prefix_hints ${_gtf_host_prefixes})
 list(REMOVE_DUPLICATES _gtf_prefix_hints)
-list(REMOVE_DUPLICATES _gtf_allowed_prefixes)
 find_path(MKL_INCLUDE_DIR mkl.h HINTS ${_gtf_prefix_hints} PATH_SUFFIXES include REQUIRED)
 find_library(BLAS_LIBRARY NAMES blas HINTS ${_gtf_prefix_hints} PATH_SUFFIXES lib REQUIRED)
 find_library(LAPACK_LIBRARY NAMES lapack HINTS ${_gtf_prefix_hints} PATH_SUFFIXES lib REQUIRED)
@@ -83,32 +99,32 @@ find_library(MKL_SCALAPACK_LIBRARY NAMES mkl_scalapack_lp64
 find_library(MKL_BLACS_LIBRARY NAMES mkl_blacs_openmpi_lp64
   HINTS ${_gtf_prefix_hints} PATH_SUFFIXES lib REQUIRED)
 
-if(NOT _gtf_allowed_prefixes)
-  message(FATAL_ERROR
-    "Activate the supported conda environment (or build through conda-build)")
-endif()
-function(gtf_require_conda_path label path)
-  set(_in_conda OFF)
-  foreach(_prefix IN LISTS _gtf_allowed_prefixes)
+function(gtf_require_prefix label path prefixes)
+  set(_allowed OFF)
+  foreach(_prefix IN LISTS ${prefixes})
     cmake_path(IS_PREFIX _prefix "${path}" NORMALIZE _in_prefix)
     if(_in_prefix)
-      set(_in_conda ON)
+      set(_allowed ON)
       break()
     endif()
   endforeach()
-  if(NOT _in_conda)
+  if(NOT _allowed)
     message(FATAL_ERROR
-      "${label} resolved outside the supported conda prefixes: ${path}")
+      "${label} resolved outside the supported conda prefixes "
+      "(${${prefixes}}): ${path}")
   endif()
 endfunction()
 foreach(_path IN ITEMS
-    CMAKE_C_COMPILER CMAKE_CXX_COMPILER CMAKE_Fortran_COMPILER
+    CMAKE_C_COMPILER CMAKE_CXX_COMPILER CMAKE_Fortran_COMPILER)
+  gtf_require_prefix("${_path}" "${${_path}}" _gtf_tool_prefixes)
+endforeach()
+foreach(_path IN ITEMS
     MKL_INCLUDE_DIR BLAS_LIBRARY LAPACK_LIBRARY
     MKL_SCALAPACK_LIBRARY MKL_BLACS_LIBRARY)
-  gtf_require_conda_path("${_path}" "${${_path}}")
+  gtf_require_prefix("${_path}" "${${_path}}" _gtf_host_prefixes)
 endforeach()
 foreach(_mpi_library IN LISTS MPI_C_LIBRARIES)
-  gtf_require_conda_path("MPI" "${_mpi_library}")
+  gtf_require_prefix("MPI" "${_mpi_library}" _gtf_host_prefixes)
 endforeach()
 if(NOT CMAKE_C_COMPILER_ID STREQUAL "IntelLLVM" OR
    NOT CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")

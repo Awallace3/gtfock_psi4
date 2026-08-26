@@ -29,13 +29,38 @@ while (($#)); do
     shift
 done
 
-CONDA_ROOTS=()
-for prefix in "${CONDA_PREFIX:-}" "${PREFIX:-}" "${BUILD_PREFIX:-}"; do
-    if [[ -n $prefix ]]; then
-        CONDA_ROOTS+=("$(cd "$prefix" && pwd -P)")
-    fi
-done
-if ((${#CONDA_ROOTS[@]} == 0)); then
+# conda-build splits compilers into BUILD_PREFIX and link dependencies into
+# PREFIX. Honor those only when conda-build is actually driving this run: a
+# stray PREFIX export in a developer shell must neither abort the build nor
+# widen the prefixes that tools and libraries are allowed to come from.
+if [[ -n ${CONDA_BUILD:-}${CONDA_BUILD_STATE:-} \
+      && -n ${PREFIX:-} && -n ${BUILD_PREFIX:-} ]]; then
+    HOST_PREFIX_CANDIDATES=("$PREFIX")
+    TOOL_PREFIX_CANDIDATES=("$BUILD_PREFIX")
+else
+    HOST_PREFIX_CANDIDATES=("${CONDA_PREFIX:-}")
+    TOOL_PREFIX_CANDIDATES=("${CONDA_PREFIX:-}")
+fi
+
+resolve_prefixes() {
+    local prefix
+    for prefix in "$@"; do
+        [[ -n $prefix && -d $prefix ]] || continue
+        (cd -- "$prefix" && pwd -P)
+    done
+}
+
+HOST_PREFIXES=()
+TOOL_PREFIXES=()
+while IFS= read -r prefix; do
+    HOST_PREFIXES+=("$prefix")
+done < <(resolve_prefixes "${HOST_PREFIX_CANDIDATES[@]}")
+while IFS= read -r prefix; do
+    TOOL_PREFIXES+=("$prefix")
+done < <(resolve_prefixes "${TOOL_PREFIX_CANDIDATES[@]}")
+
+CONDA_ROOTS=("${HOST_PREFIXES[@]}" "${TOOL_PREFIXES[@]}")
+if ((${#HOST_PREFIXES[@]} == 0)); then
     echo "Activate the supported conda environment or run through conda-build." >&2
     exit 2
 fi
@@ -59,9 +84,9 @@ done
 CC=$(readlink -f "$(command -v icx)")
 CXX=$(readlink -f "$(command -v icpx)")
 if [[ -z ${FC:-} ]]; then
-    for prefix in "${BUILD_PREFIX:-}" "${CONDA_PREFIX:-}"; do
-        candidate=${prefix:+"$prefix/bin/x86_64-conda-linux-gnu-gfortran"}
-        if [[ -n $candidate && -x $candidate ]]; then
+    for prefix in "${TOOL_PREFIXES[@]}"; do
+        candidate="$prefix/bin/x86_64-conda-linux-gnu-gfortran"
+        if [[ -x $candidate ]]; then
             FC=$candidate
             break
         fi
@@ -139,10 +164,9 @@ rm -f -- "$GTF_SOURCE/.git"
 )
 
 echo "==> Configuring GTFock with icx/icpx and conda OpenMPI"
-PREFIX_PATHS=("$INSTALL_PREFIX")
-for prefix in "${PREFIX:-}" "${CONDA_PREFIX:-}"; do
-    [[ -n $prefix ]] && PREFIX_PATHS+=("$prefix")
-done
+# Only the host prefix may supply numerical libraries and MPI; BUILD_PREFIX
+# stays off CMAKE_PREFIX_PATH so a compiler-only prefix cannot satisfy them.
+PREFIX_PATHS=("$INSTALL_PREFIX" "${HOST_PREFIXES[@]}")
 CMAKE_PREFIXES=$(IFS=';'; echo "${PREFIX_PATHS[*]}")
 
 cmake -S "$ROOT" -B "$BUILD_ROOT/gtfock" \

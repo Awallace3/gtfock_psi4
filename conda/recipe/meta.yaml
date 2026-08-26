@@ -82,7 +82,7 @@ about:
     - simint-generator/LICENSE
     - conda/recipe/licenses/GTFock-license-status.txt
   dev_url: https://github.com/Awallace3/gtfock_psi4
-  doc_url: https://github.com/Awallace3/gtfock_psi4/blob/master/docs/conda-packaging.md
+  doc_url: https://github.com/Awallace3/gtfock_psi4/blob/main/docs/conda-packaging.md
 
 extra:
   recipe-maintainers:

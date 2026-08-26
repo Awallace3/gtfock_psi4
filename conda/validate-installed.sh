@@ -40,18 +40,13 @@ for binary in "$FRESH_PREFIX/bin/pscf" \
     ! grep -i cuda <<<"$links"
 done
 
-output=$(env -u CONDA_OVERRIDE_CUDA "$CONDA" run --prefix "$FRESH_PREFIX" \
-    env OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-    mpirun --oversubscribe -n 2 "$FRESH_PREFIX/bin/pscf" \
-    "$FRESH_PREFIX/share/gtfock/examples/sto-3g.gbs" \
-    "$FRESH_PREFIX/share/gtfock/examples/water.xyz" \
-    2 1 1 2 15)
-printf '%s\n' "$output"
-grep -q "SAD guess unavailable; using core-Hamiltonian guess" <<<"$output"
-energy=$(awk '/^[[:space:]]*energy[[:space:]]/ { value=$2 } END { print value }' <<<"$output")
-test -n "$energy"
-awk -v actual="$energy" -v reference=-74.9450213019 'BEGIN {
-    error = actual - reference; if (error < 0) error = -error;
-    printf("installed pscf energy=%0.12f error=%0.3e Eh\n", actual, error);
-    exit(error > 1.0e-9);
-}'
+# Run the single numerical oracle against the installed example data, so the
+# fresh-install gate cannot drift from tests/test_pscf_regression.py. The
+# override is removed for execution: only the solve above needed it.
+env -u CONDA_OVERRIDE_CUDA "$CONDA" run --prefix "$FRESH_PREFIX" \
+    "$(dirname "$CONDA")/python" "$ROOT/tests/test_pscf_regression.py" \
+    --mpiexec "$FRESH_PREFIX/bin/mpirun" \
+    --mpiexec-preflag=--oversubscribe \
+    --pscf "$FRESH_PREFIX/bin/pscf" \
+    --data-dir "$FRESH_PREFIX/share/gtfock/examples" \
+    --timeout 60
