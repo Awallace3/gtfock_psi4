@@ -85,6 +85,14 @@ for component in "${!PINNED_COMPONENTS[@]}"; do
         exit 2
     fi
 done
+for component in "${!SNAPSHOT_COMPONENTS[@]}"; do
+    if [[ -z ${PINNED_COMPONENTS[$component]:-} ]]; then
+        echo "Pinned submodule $component was snapshotted into the artifact," \
+             "but source-provenance.yaml records no component version for" \
+             "it; record its pinned commit before packaging." >&2
+        exit 2
+    fi
+done
 
 mkdir -p -- "$PKG_CACHE" "$OUTPUT_DIR"
 rm -f -- "$OUTPUT_DIR/linux-64"/gtfock-*.conda \

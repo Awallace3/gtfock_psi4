@@ -9,7 +9,9 @@ for path in \
     "$PREFIX/lib/libGTMatrix.a" \
     "$PREFIX/include/pfock.h" \
     "$PREFIX/include/CInt.h" \
-    "$PREFIX/lib/cmake/GTFock/GTFockConfig.cmake"; do
+    "$PREFIX/lib/cmake/GTFock/GTFockConfig.cmake" \
+    "$PREFIX/share/gtfock/examples/sto-3g.gbs" \
+    "$PREFIX/share/gtfock/examples/water.xyz"; do
     test -e "$path"
 done
 
@@ -24,13 +26,14 @@ cmake --build consumer-build --parallel 2
 ctest --test-dir consumer-build --output-on-failure
 
 # Exercise the installed pscf executable on two ranks and verify the converged
-# numerical result, not merely successful MPI startup.
+# numerical result, not merely successful MPI startup. The inputs come from the
+# installed example data, so the packaged data is what is validated.
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
 python tests/test_pscf_regression.py \
     --mpiexec "$PREFIX/bin/mpirun" \
     --mpiexec-preflag=--oversubscribe \
     --pscf "$PREFIX/bin/pscf" \
-    --root "$PWD" \
+    --data-dir "$PREFIX/share/gtfock/examples" \
     --timeout 60
 
 package_metadata=$(find "$PREFIX/conda-meta" -maxdepth 1 -name 'gtfock-*.json' -print -quit)

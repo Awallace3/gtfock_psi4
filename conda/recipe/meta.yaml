@@ -56,8 +56,6 @@ test:
   source_files:
     - tests/package-consumer/*
     - tests/test_pscf_regression.py
-    - GTFock/data/sto-3g.gbs
-    - GTFock/data/water.xyz
   requires:
     - cmake ==3.31.6 =h74e3db0_0
     - ninja

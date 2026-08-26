@@ -13,8 +13,17 @@ CONDA_OVERRIDE_CUDA=12.0 "$CONDA" create --yes --prefix "$FRESH_PREFIX" \
     --override-channels --channel "file://$OUTPUT_DIR" --channel conda-forge \
     gtfock=0.1.0
 
+# CONDA_EXE is commonly <base>/condabin/conda, which has no sibling python, so
+# resolve the interpreter through the conda base prefix instead.
+CONDA_BASE=$("$CONDA" info --base)
+PYTHON="$CONDA_BASE/bin/python"
+if [[ ! -x $PYTHON ]]; then
+    echo "No python interpreter at $PYTHON (conda base $CONDA_BASE)." >&2
+    exit 2
+fi
+
 list_json=$("$CONDA" list --prefix "$FRESH_PREFIX" --json)
-"$(dirname "$CONDA")/python" -c '
+"$PYTHON" -c '
 import json, sys
 names = {record["name"] for record in json.load(sys.stdin)}
 forbidden = sorted(name for name in names if name == "cuda-version" or
@@ -44,7 +53,7 @@ done
 # fresh-install gate cannot drift from tests/test_pscf_regression.py. The
 # override is removed for execution: only the solve above needed it.
 env -u CONDA_OVERRIDE_CUDA "$CONDA" run --prefix "$FRESH_PREFIX" \
-    "$(dirname "$CONDA")/python" "$ROOT/tests/test_pscf_regression.py" \
+    "$PYTHON" "$ROOT/tests/test_pscf_regression.py" \
     --mpiexec "$FRESH_PREFIX/bin/mpirun" \
     --mpiexec-preflag=--oversubscribe \
     --pscf "$FRESH_PREFIX/bin/pscf" \

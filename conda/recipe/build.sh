@@ -16,8 +16,7 @@ export OMPI_FC="$FC"
 
 # Prove that OpenMPI wrappers dispatch to the validated compilers rather than
 # silently falling back to the GCC compiler used to build OpenMPI itself.
-mpicc --showme:command | tee /tmp/gtfock-mpicc-command.txt
-grep -F "$CC" /tmp/gtfock-mpicc-command.txt
+mpicc --showme:command | grep -F "$CC"
 mpicxx --showme:command | grep -F "$CXX"
 mpifort --showme:command | grep -F "$FC"
 "$CC" --version | head -n 1
@@ -32,12 +31,18 @@ export SIMINT_VECTOR=avx2
 
 "$SRC_DIR/build_deps.sh" --clean
 
-# The verifications below must never be able to pass by inspecting nothing.
+# The verifications below must never be able to pass by inspecting nothing, so
+# every path they inspect is required to exist first.
 for required in \
     "$PREFIX/bin/pscf" \
     "$PREFIX/lib/libgtfock.so" \
     "$PREFIX/lib/libcint.so" \
-    "$PREFIX/lib/cmake/GTFock/GTFockTargets.cmake"; do
+    "$PREFIX/lib/libGTMatrix.a" \
+    "$PREFIX/include/pfock.h" \
+    "$PREFIX/include/CInt.h" \
+    "$PREFIX/lib/cmake/GTFock/GTFockTargets.cmake" \
+    "$PREFIX/share/gtfock/examples/sto-3g.gbs" \
+    "$PREFIX/share/gtfock/examples/water.xyz"; do
     if [[ ! -e $required ]]; then
         echo "build_deps.sh did not install $required" >&2
         exit 1
@@ -48,13 +53,25 @@ done
 # detail. Its standalone archive and development metadata are not part of the
 # GTFock consumer ABI and conda-forge discourages shipping bundled static libs.
 # Decision CF-SIMINT-006 requires the removal to be verified rather than
-# assumed, and Simint's own install location for its CMake package metadata is
-# not part of this project's contract, so remove by search instead of by a
-# hard-coded list.
+# assumed. $PREFIX is the shared conda-build host prefix holding every host
+# dependency, so remove exactly the files this build's Simint install recorded
+# rather than everything under $PREFIX whose name contains "simint"; anything
+# else matching afterwards belongs to a dependency and is reported, not deleted.
+simint_manifest="$GTF_BUILD_ROOT/simint/install_manifest.txt"
+if [[ ! -s $simint_manifest ]]; then
+    echo "No Simint install manifest at $simint_manifest: cannot prove which" \
+         "installed files CF-SIMINT-006 must remove" >&2
+    exit 1
+fi
 simint_artifacts=()
-while IFS= read -r -d '' path; do
+while IFS= read -r path; do
+    [[ -n $path ]] || continue
+    if [[ $path != "$PREFIX"/* ]]; then
+        echo "Simint install manifest lists $path outside \$PREFIX" >&2
+        exit 1
+    fi
     simint_artifacts+=("$path")
-done < <(find "$PREFIX" -iname '*simint*' -print0)
+done <"$simint_manifest"
 if ((${#simint_artifacts[@]} == 0)); then
     echo "No installed Simint artifacts found: the build no longer installs" \
          "the generated Simint that CF-SIMINT-006 removes" >&2
@@ -65,10 +82,36 @@ if [[ ! -f "$PREFIX/lib/libsimint.a" ]]; then
          "package an unverified Simint layout" >&2
     exit 1
 fi
-rm -rf -- "${simint_artifacts[@]}"
-simint_survivors=$(find "$PREFIX" -iname '*simint*' -print)
+if ! printf '%s\n' "${simint_artifacts[@]}" | grep -qxF "$PREFIX/lib/libsimint.a"; then
+    echo "lib/libsimint.a is not owned by the Simint install manifest;" \
+         "refusing to delete a file this build does not own" >&2
+    exit 1
+fi
+rm -f -- "${simint_artifacts[@]}"
+# Drop the directories the removed files leave behind, deepest first, so an
+# emptied include/simint tree does not ship as a stray empty directory. Only
+# directories that become empty are removed, and never $PREFIX itself.
+simint_directories=()
+for path in "${simint_artifacts[@]}"; do
+    directory=$(dirname -- "$path")
+    while [[ $directory == "$PREFIX"/* ]]; do
+        simint_directories+=("$directory")
+        directory=$(dirname -- "$directory")
+    done
+done
+while IFS= read -r directory; do
+    rmdir --ignore-fail-on-non-empty -- "$directory" 2>/dev/null || true
+done < <(printf '%s\n' "${simint_directories[@]}" | sort -u -r)
+for path in "${simint_artifacts[@]}"; do
+    if [[ -e $path ]]; then
+        echo "Simint artifact survived removal: $path" >&2
+        exit 1
+    fi
+done
+simint_survivors=$(find "$PREFIX" -iname '*simint*' -not -path "$PREFIX/conda-meta/*" -print)
 if [[ -n $simint_survivors ]]; then
-    echo "Simint artifacts survived removal:" >&2
+    echo "Simint-named files remain under \$PREFIX but are not owned by this" \
+         "build's Simint install manifest; resolve before packaging:" >&2
     printf '%s\n' "$simint_survivors" >&2
     exit 1
 fi
@@ -86,15 +129,38 @@ installed_artifacts=(
     "$PREFIX"/lib/libgtfock.so*
     "$PREFIX"/lib/libcint.so*
     "$PREFIX"/lib/libGTMatrix.a
+    "$PREFIX"/include/pfock.h
+    "$PREFIX"/include/CInt.h
     "$PREFIX"/lib/cmake/GTFock
     "$PREFIX"/share/gtfock
 )
 shopt -u nullglob
+# A non-existent literal survives nullglob, and grep exits 2 on an unreadable
+# operand even when another operand matched, so "no match" alone would let this
+# assertion pass without inspecting the shipped tree. Require every operand to
+# exist and treat any grep failure as a leak.
 if ((${#installed_artifacts[@]} == 0)); then
     echo "No installed GTFock artifacts to check for build-path leaks" >&2
     exit 1
 fi
-if grep -R -F -e "$SRC_DIR" -e "$BUILD_PREFIX" "${installed_artifacts[@]}"; then
-    echo "An installed GTFock artifact contains a build-time path" >&2
+for artifact in "${installed_artifacts[@]}"; do
+    if [[ ! -e $artifact ]]; then
+        echo "Cannot check build-path leaks: $artifact is not installed" >&2
+        exit 1
+    fi
+done
+set +e
+leaking_files=$(grep -R -F -l -e "$SRC_DIR" -e "$BUILD_PREFIX" \
+    -- "${installed_artifacts[@]}" 2>&1)
+leak_status=$?
+set -e
+if ((leak_status == 0)); then
+    echo "An installed GTFock artifact contains a build-time path:" >&2
+    printf '%s\n' "$leaking_files" >&2
+    exit 1
+fi
+if ((leak_status != 1)); then
+    echo "Build-path leak scan failed with grep status $leak_status:" >&2
+    printf '%s\n' "$leaking_files" >&2
     exit 1
 fi

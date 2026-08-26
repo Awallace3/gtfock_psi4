@@ -100,9 +100,15 @@ find_library(MKL_BLACS_LIBRARY NAMES mkl_blacs_openmpi_lp64
   HINTS ${_gtf_prefix_hints} PATH_SUFFIXES lib REQUIRED)
 
 function(gtf_require_prefix label path prefixes)
+  # cmake_path(IS_PREFIX) is lexical, so both sides must be resolved first:
+  # build_deps.sh passes compilers through readlink -f while the environment
+  # still reports the unresolved prefix, and symlinked home directories are
+  # routine on the HPC/NFS hosts this stack targets.
+  file(REAL_PATH "${path}" _real_path)
   set(_allowed OFF)
   foreach(_prefix IN LISTS ${prefixes})
-    cmake_path(IS_PREFIX _prefix "${path}" NORMALIZE _in_prefix)
+    file(REAL_PATH "${_prefix}" _real_prefix)
+    cmake_path(IS_PREFIX _real_prefix "${_real_path}" NORMALIZE _in_prefix)
     if(_in_prefix)
       set(_allowed ON)
       break()
@@ -295,8 +301,8 @@ if(BUILD_TESTING)
       "${MPIEXEC_EXECUTABLE}" ${GTF_MPIEXEC_PREFLAGS}
       "${MPIEXEC_NUMPROC_FLAG}" 2
       "$<TARGET_FILE:test_overlap>"
-      "${CMAKE_CURRENT_SOURCE_DIR}/GTFock/data/sto-3g.gbs"
-      "${CMAKE_CURRENT_SOURCE_DIR}/GTFock/data/water.xyz")
+      "${GTF_GTFock_SOURCE_DIR}/data/sto-3g.gbs"
+      "${GTF_GTFock_SOURCE_DIR}/data/water.xyz")
   set_tests_properties(legacy_mpi_overlap PROPERTIES TIMEOUT 120 PROCESSORS 2)
 
   add_test(NAME unpatched_source_rejected
@@ -340,7 +346,7 @@ if(BUILD_TESTING)
         --mpiexec "${MPIEXEC_EXECUTABLE}"
         ${_gtf_preflag_args}
         --pscf "$<TARGET_FILE:pscf>"
-        --root "${CMAKE_CURRENT_SOURCE_DIR}"
+        --data-dir "${GTF_GTFock_SOURCE_DIR}/data"
         --timeout 30)
     set_tests_properties(pscf_numerical_regression PROPERTIES
       TIMEOUT 150 PROCESSORS 2)
@@ -377,8 +383,8 @@ install(DIRECTORY GTMatrix/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
   FILES_MATCHING PATTERN "*.h")
 install(FILES
-  "${CMAKE_CURRENT_SOURCE_DIR}/GTFock/data/sto-3g.gbs"
-  "${CMAKE_CURRENT_SOURCE_DIR}/GTFock/data/water.xyz"
+  "${GTF_GTFock_SOURCE_DIR}/data/sto-3g.gbs"
+  "${GTF_GTFock_SOURCE_DIR}/data/water.xyz"
   DESTINATION "${CMAKE_INSTALL_DATADIR}/gtfock/examples")
 install(EXPORT GTFockTargets
   FILE GTFockTargets.cmake
