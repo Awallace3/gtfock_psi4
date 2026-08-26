@@ -129,6 +129,15 @@ foreach(_path IN ITEMS
     MKL_SCALAPACK_LIBRARY MKL_BLACS_LIBRARY)
   gtf_require_prefix("${_path}" "${${_path}}" _gtf_host_prefixes)
 endforeach()
+# FindMPI leaves MPI_C_LIBRARIES empty when the compiler has builtin MPI
+# support, which would let the MPI provenance gate below pass without
+# inspecting any MPI library at all.
+if(NOT MPI_C_LIBRARIES)
+  message(FATAL_ERROR
+    "FindMPI reported no MPI C libraries, so the MPI provenance of this build "
+    "cannot be verified; configure with a plain icx/icpx compiler and let "
+    "FindMPI locate the conda OpenMPI libraries instead of an MPI wrapper")
+endif()
 foreach(_mpi_library IN LISTS MPI_C_LIBRARIES)
   gtf_require_prefix("MPI" "${_mpi_library}" _gtf_host_prefixes)
 endforeach()

@@ -115,8 +115,22 @@ if [[ -n $simint_survivors ]]; then
     printf '%s\n' "$simint_survivors" >&2
     exit 1
 fi
-if grep -R -i -e simint "$PREFIX/lib/cmake/GTFock"; then
-    echo "GTFock CMake metadata references the removed Simint package" >&2
+# grep exits 2 on an unreadable or missing operand, so "no match" alone would
+# let this assertion pass without reading the shipped metadata. Distinguish
+# "scanned and clean" (1) from every other outcome.
+set +e
+simint_metadata=$(grep -R -i -e simint -- "$PREFIX/lib/cmake/GTFock" 2>&1)
+simint_metadata_status=$?
+set -e
+if ((simint_metadata_status == 0)); then
+    echo "GTFock CMake metadata references the removed Simint package:" >&2
+    printf '%s\n' "$simint_metadata" >&2
+    exit 1
+fi
+if ((simint_metadata_status != 1)); then
+    echo "Simint metadata scan failed with grep status" \
+         "$simint_metadata_status:" >&2
+    printf '%s\n' "$simint_metadata" >&2
     exit 1
 fi
 

@@ -98,7 +98,14 @@ if [[ ! -x $FC ]] || ! path_is_in_conda "$(readlink -f "$FC")"; then
     exit 2
 fi
 
-if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+# Only $ROOT's own repository can report on the pinned sources being compiled.
+# --is-inside-work-tree is true for any enclosing repository as well, so a
+# conda-build $SRC_DIR snapshot that happens to sit inside an unrelated
+# checkout would be judged by that checkout's submodules instead of the
+# pinned archives it actually contains.
+gtf_repo_root=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || true)
+if [[ -n $gtf_repo_root ]] &&
+   [[ $(cd -- "$gtf_repo_root" && pwd -P) == "$ROOT" ]]; then
     if git -C "$ROOT" submodule status | grep -q '^-'; then
         echo "Initialize pinned sources first: git submodule update --init --recursive" >&2
         exit 2

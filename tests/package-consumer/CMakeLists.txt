@@ -7,19 +7,21 @@ find_package(GTFock 0.1 CONFIG REQUIRED)
 # A library location or include directory outside it means the metadata still
 # points at the tree that produced the package, which breaks relocation.
 foreach(_gtfock_target IN ITEMS GTFock::GTFock GTFock::CInt GTFock::GTMatrix)
-  set(_gtfock_paths "")
+  # Both halves must be present: guarding the union would let an unresolvable
+  # imported library location go unchecked while the include directories alone
+  # carried the assertion.
   get_target_property(_gtfock_location ${_gtfock_target} LOCATION)
-  if(_gtfock_location)
-    list(APPEND _gtfock_paths "${_gtfock_location}")
+  if(NOT _gtfock_location)
+    message(FATAL_ERROR
+      "${_gtfock_target} exposes no imported library location to check")
   endif()
   get_target_property(_gtfock_includes ${_gtfock_target}
     INTERFACE_INCLUDE_DIRECTORIES)
-  if(_gtfock_includes)
-    list(APPEND _gtfock_paths ${_gtfock_includes})
+  if(NOT _gtfock_includes)
+    message(FATAL_ERROR
+      "${_gtfock_target} exposes no include directories to check")
   endif()
-  if(NOT _gtfock_paths)
-    message(FATAL_ERROR "${_gtfock_target} exposes no location to check")
-  endif()
+  set(_gtfock_paths "${_gtfock_location}" ${_gtfock_includes})
   foreach(_gtfock_path IN LISTS _gtfock_paths)
     set(_gtfock_inside FALSE)
     foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)

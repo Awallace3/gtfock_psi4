@@ -48,7 +48,12 @@ observe that CUDA support is unused.
 while solving. They do not enable CUDA at build or runtime. Validation then
 asserts all of the following before running with the override removed:
 
-- no `cuda-version`, `cuda-*`, `libcuda*`, or `libcudart*` package is installed;
+- no package whose name contains `cuda` or `nvidia` (`cuda-version`, `cuda-*`,
+  `cudatoolkit`, `libcuda*`, `nvidia-*`, `libnvidia-*`, ...) and no CUDA
+  component library whose name contains neither (`cudnn`, `cutensor`, `nccl`,
+  `nvjitlink`, `nvrtc`, `nvtx`, `nvcomp`, `cublas`, `cufft`, `cufile`,
+  `curand`, `cusolver`, `cusparse`, each optionally `lib`-prefixed or
+  `-dev`-suffixed) is installed;
 - GTFock package metadata contains no CUDA requirement;
 - `pscf`, `libgtfock`, and `libcint` have no CUDA dynamic linkage; and
 - the installed two-rank numerical execution succeeds on the CPU.
