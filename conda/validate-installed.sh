@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+# shellcheck source=conda/recipe/grep-assert.sh
+source "$ROOT/conda/recipe/grep-assert.sh"
 CONDA=${CONDA_EXE:-"$HOME/miniconda3/bin/conda"}
 OUTPUT_DIR=${GTF_CONDA_OUTPUT_DIR:-"$ROOT/.conda-pkgs/output"}
 FRESH_PREFIX=${GTF_CONDA_TEST_PREFIX:-"$ROOT/.conda-envs/package-test"}
@@ -47,18 +49,18 @@ print(f"fresh prefix contains {len(names)} packages and no CUDA package")
 
 package_metadata=$(find "$FRESH_PREFIX/conda-meta" -maxdepth 1 -name 'gtfock-*.json' -print -quit)
 test -n "$package_metadata"
-if grep -i cuda "$package_metadata"; then
-    echo "gtfock package metadata unexpectedly mentions CUDA" >&2
-    exit 1
-fi
+gtf_grep_absent "gtfock package metadata unexpectedly mentions CUDA" \
+    -i -e cuda -- "$package_metadata"
 
 for binary in "$FRESH_PREFIX/bin/pscf" \
               "$FRESH_PREFIX/lib/libgtfock.so" \
               "$FRESH_PREFIX/lib/libcint.so"; do
     links=$(ldd "$binary")
     printf '%s\n' "$links"
-    ! grep -q "not found" <<<"$links"
-    ! grep -i cuda <<<"$links"
+    gtf_grep_absent "$binary has unresolved libraries" \
+        -F -e "not found" <<<"$links"
+    gtf_grep_absent "$binary has CUDA dynamic linkage" \
+        -i -e cuda <<<"$links"
 done
 
 # Run the single numerical oracle against the installed example data, so the

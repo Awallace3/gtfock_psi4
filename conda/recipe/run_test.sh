@@ -2,6 +2,9 @@
 set -euo pipefail
 set -x
 
+# shellcheck source=conda/recipe/grep-assert.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/grep-assert.sh"
+
 for path in \
     "$PREFIX/bin/pscf" \
     "$PREFIX/lib/libgtfock.so" \
@@ -38,7 +41,8 @@ python tests/test_pscf_regression.py \
 
 package_metadata=$(find "$PREFIX/conda-meta" -maxdepth 1 -name 'gtfock-*.json' -print -quit)
 test -n "$package_metadata"
-! grep -i cuda "$package_metadata"
+gtf_grep_absent "gtfock package metadata unexpectedly mentions CUDA" \
+    -i -e cuda -- "$package_metadata"
 
 # conda-build re-points SRC_DIR and BUILD_PREFIX for this phase, so the exact
 # build-time strings are asserted by build.sh, where they are authoritative.
@@ -47,8 +51,10 @@ test -n "$package_metadata"
 for binary in "$PREFIX/bin/pscf" "$PREFIX/lib/libgtfock.so" "$PREFIX/lib/libcint.so"; do
     report=$(basename "$binary")
     ldd "$binary" | tee "$report.ldd"
-    ! grep -q "not found" "$report.ldd"
-    ! grep -i cuda "$report.ldd"
+    gtf_grep_absent "$binary has unresolved libraries" \
+        -F -e "not found" -- "$report.ldd"
+    gtf_grep_absent "$binary has CUDA dynamic linkage" \
+        -i -e cuda -- "$report.ldd"
     readelf -d "$binary" | tee "$report.dynamic"
     search_paths=$(sed -n 's/.*(R[A-Z]*PATH).*\[\(.*\)\]/\1/p' "$report.dynamic" \
         | tr '\n' ':')

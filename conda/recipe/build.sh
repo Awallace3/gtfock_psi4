@@ -7,9 +7,20 @@ set -x
 : "${SRC_DIR:?conda-build SRC_DIR is required}"
 : "${CPU_COUNT:=2}"
 
-export CC="$(command -v icx)"
-export CXX="$(command -v icpx)"
-export FC="$(command -v x86_64-conda-linux-gnu-gfortran)"
+CC=$(command -v icx || true)
+CXX=$(command -v icpx || true)
+FC=$(command -v x86_64-conda-linux-gnu-gfortran || true)
+# export CC=$(...) reports export's status, not the substitution's, so an
+# unresolved compiler would leave the variable empty and every grep pattern
+# below would match unconditionally.
+for _tool in CC CXX FC; do
+    if [[ -z ${!_tool} ]]; then
+        echo "$_tool did not resolve to a validated compiler on PATH, so the" \
+             "OpenMPI wrapper dispatch proof cannot be made" >&2
+        exit 1
+    fi
+done
+export CC CXX FC
 export OMPI_CC="$CC"
 export OMPI_CXX="$CXX"
 export OMPI_FC="$FC"
