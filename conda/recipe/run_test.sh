@@ -53,14 +53,13 @@ gtf_grep_absent "gtfock package metadata unexpectedly mentions CUDA" \
 # every runtime search path is $ORIGIN-relative or inside the installed prefix.
 # Match CUDA-family shared-library basenames rather than the substring "cuda",
 # which also occurs inside unrelated ICU's libicudata.so.
-cuda_link_pattern='(^|[[:space:]/])(libcuda|libcudart|libcublas|libcufft|libcurand|libcusolver|libcusparse|libnv[^[:space:]/]*|libnvidia[^[:space:]/]*|libnccl)[^[:space:]/]*\.so'
 for binary in "$PREFIX/bin/pscf" "$PREFIX/lib/libgtfock.so" "$PREFIX/lib/libcint.so"; do
     report=$(basename "$binary")
     ldd "$binary" | tee "$report.ldd"
     gtf_grep_absent "$binary has unresolved libraries" \
         -F -e "not found" -- "$report.ldd"
     gtf_grep_absent "$binary has CUDA dynamic linkage" \
-        -E -i -e "$cuda_link_pattern" -- "$report.ldd"
+        -E -i -e "$GTF_CUDA_LINK_PATTERN" -- "$report.ldd"
     readelf -d "$binary" | tee "$report.dynamic"
     search_paths=$(sed -n 's/.*(R[A-Z]*PATH).*\[\(.*\)\]/\1/p' "$report.dynamic" \
         | tr '\n' ':')

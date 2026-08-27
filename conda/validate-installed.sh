@@ -8,12 +8,29 @@ CONDA=${CONDA_EXE:-"$HOME/miniconda3/bin/conda"}
 OUTPUT_DIR=${GTF_CONDA_OUTPUT_DIR:-"$ROOT/.conda-pkgs/output"}
 FRESH_PREFIX=${GTF_CONDA_TEST_PREFIX:-"$ROOT/.conda-envs/package-test"}
 
+mapfile -d '' -t package_artifacts < <(
+    find "$OUTPUT_DIR/linux-64" -maxdepth 1 -type f \
+        \( -name 'gtfock-*.conda' -o -name 'gtfock-*.tar.bz2' \) -print0
+)
+if ((${#package_artifacts[@]} != 1)); then
+    echo "Expected exactly one local GTFock artifact, found ${#package_artifacts[@]}." >&2
+    exit 2
+fi
+package_artifact=${package_artifacts[0]}
+package_filename=${package_artifact##*/}
+case $package_filename in
+    *.conda) package_record=${package_filename%.conda} ;;
+    *.tar.bz2) package_record=${package_filename%.tar.bz2} ;;
+    *) echo "Unsupported package artifact: $package_artifact" >&2; exit 2 ;;
+esac
+package_metadata="$FRESH_PREFIX/conda-meta/$package_record.json"
+
 rm -rf -- "$FRESH_PREFIX"
 # Work around only OpenMPI's upstream virtual-package metadata while solving.
 # No CUDA package is requested or permitted below.
 CONDA_OVERRIDE_CUDA=12.0 "$CONDA" create --yes --prefix "$FRESH_PREFIX" \
-    --override-channels --channel "file://$OUTPUT_DIR" --channel conda-forge \
-    gtfock=0.1.0
+    --override-channels --channel conda-forge \
+    "$package_artifact"
 
 # CONDA_EXE is commonly <base>/condabin/conda, which has no sibling python, so
 # resolve the interpreter through the conda base prefix instead.
@@ -32,9 +49,9 @@ names = {record["name"] for record in json.load(sys.stdin)}
 # CPU-only claim, so match the whole namespace rather than an ad hoc list:
 # "cuda"/"nvidia" anywhere in the name, plus the CUDA component libraries
 # whose names contain neither (optionally "lib"-prefixed and "-dev"-suffixed).
-CUDA_COMPONENTS = ("cudnn", "cutensor", "nccl", "nvjitlink", "nvrtc", "nvtx",
-                   "nvcomp", "cublas", "cufft", "cufile", "curand", "cusolver",
-                   "cusparse")
+CUDA_COMPONENTS = ("cudnn", "cutensor", "cupti", "nccl", "nvjitlink", "nvrtc",
+                   "nvtx", "nvcomp", "cublas", "cufft", "cufile", "curand",
+                   "cusolver", "cusparse")
 def is_cuda(name):
     if "cuda" in name or "nvidia" in name:
         return True
@@ -47,14 +64,15 @@ if forbidden:
 print(f"fresh prefix contains {len(names)} packages and no CUDA package")
 ' <<<"$list_json"
 
-package_metadata=$(find "$FRESH_PREFIX/conda-meta" -maxdepth 1 -name 'gtfock-*.json' -print -quit)
-test -n "$package_metadata"
+if [[ ! -f $package_metadata ]]; then
+    echo "Exact local artifact was not installed: $package_record" >&2
+    exit 1
+fi
 gtf_grep_absent "gtfock package metadata unexpectedly mentions CUDA" \
     -i -e cuda -- "$package_metadata"
 
 # Match CUDA-family shared-library basenames rather than the substring "cuda",
 # which also occurs inside unrelated ICU's libicudata.so.
-cuda_link_pattern='(^|[[:space:]/])(libcuda|libcudart|libcublas|libcufft|libcurand|libcusolver|libcusparse|libnv[^[:space:]/]*|libnvidia[^[:space:]/]*|libnccl)[^[:space:]/]*\.so'
 for binary in "$FRESH_PREFIX/bin/pscf" \
               "$FRESH_PREFIX/lib/libgtfock.so" \
               "$FRESH_PREFIX/lib/libcint.so"; do
@@ -63,7 +81,7 @@ for binary in "$FRESH_PREFIX/bin/pscf" \
     gtf_grep_absent "$binary has unresolved libraries" \
         -F -e "not found" <<<"$links"
     gtf_grep_absent "$binary has CUDA dynamic linkage" \
-        -E -i -e "$cuda_link_pattern" <<<"$links"
+        -E -i -e "$GTF_CUDA_LINK_PATTERN" <<<"$links"
 done
 
 # Run the single numerical oracle against the installed example data, so the
