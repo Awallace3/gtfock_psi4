@@ -63,10 +63,11 @@ on a CUDA runtime package. On a CPU host with no sufficiently new NVIDIA
 driver, the solver therefore rejects that exact OpenMPI build before it can
 observe that CUDA support is unused.
 
-`build-local.sh` and `validate-installed.sh` set `CONDA_OVERRIDE_CUDA=12.0` for
-conda's virtual-package detection while solving. The override does not enable
-CUDA at build or runtime. Validation asserts all of the following, and the
-second-prefix numerical run explicitly removes the override:
+The CI workflow, `build-local.sh`, and `validate-installed.sh` set
+`CONDA_OVERRIDE_CUDA=12.0` for conda's virtual-package detection while solving.
+The override does not enable CUDA at build or runtime. Validation asserts all
+of the following, and the second-prefix numerical run explicitly removes the
+override:
 
 - no package whose name contains `cuda` or `nvidia` (`cuda-version`, `cuda-*`,
   `cudatoolkit`, `libcuda*`, `nvidia-*`, `libnvidia-*`, ...) and no CUDA
