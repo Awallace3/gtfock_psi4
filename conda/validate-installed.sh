@@ -27,10 +27,20 @@ package_metadata="$FRESH_PREFIX/conda-meta/$package_record.json"
 
 rm -rf -- "$FRESH_PREFIX"
 # Work around only OpenMPI's upstream virtual-package metadata while solving.
-# No CUDA package is requested or permitted below.
+# No CUDA package is requested or permitted below. Installing a package file
+# directly bypasses dependency solving, so select the artifact by its exact
+# version/build from the first, strict-priority local channel instead.
+package_version_build=${package_record#gtfock-}
+package_version=${package_version_build%%-*}
+package_build=${package_version_build#*-}
+if [[ -z $package_version || -z $package_build || $package_build == "$package_version_build" ]]; then
+    echo "Cannot derive an exact MatchSpec from $package_filename" >&2
+    exit 2
+fi
 CONDA_OVERRIDE_CUDA=12.0 "$CONDA" create --yes --prefix "$FRESH_PREFIX" \
-    --override-channels --channel conda-forge \
-    "$package_artifact"
+    --override-channels --strict-channel-priority \
+    --channel "file://$OUTPUT_DIR" --channel conda-forge \
+    "gtfock==$package_version=$package_build"
 
 # CONDA_EXE is commonly <base>/condabin/conda, which has no sibling python, so
 # resolve the interpreter through the conda base prefix instead.

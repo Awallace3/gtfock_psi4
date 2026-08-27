@@ -36,6 +36,10 @@ fresh-install check with:
 ./conda/validate-installed.sh
 ```
 
+Fresh validation requires exactly one local artifact, selects its exact
+version/build from the strict-priority local channel, and verifies that exact
+package record after installation.
+
 ### CPU-only OpenMPI metadata workaround
 
 The audited conda-forge OpenMPI 5.0.8 build has a `__cuda >=12` *virtual-package
@@ -44,28 +48,31 @@ on a CUDA runtime package. On a CPU host with no sufficiently new NVIDIA
 driver, the solver therefore rejects that exact OpenMPI build before it can
 observe that CUDA support is unused.
 
-`build-local.sh` and `validate-installed.sh` set `CONDA_OVERRIDE_CUDA=12.0` only
-while solving. They do not enable CUDA at build or runtime. Validation then
-asserts all of the following before running with the override removed:
+`build-local.sh` and `validate-installed.sh` set `CONDA_OVERRIDE_CUDA=12.0` for
+conda's virtual-package detection while solving. The override does not enable
+CUDA at build or runtime. Validation asserts all of the following, and the
+second-prefix numerical run explicitly removes the override:
 
 - no package whose name contains `cuda` or `nvidia` (`cuda-version`, `cuda-*`,
   `cudatoolkit`, `libcuda*`, `nvidia-*`, `libnvidia-*`, ...) and no CUDA
-  component library whose name contains neither (`cudnn`, `cutensor`, `nccl`,
-  `nvjitlink`, `nvrtc`, `nvtx`, `nvcomp`, `cublas`, `cufft`, `cufile`,
-  `curand`, `cusolver`, `cusparse`, each optionally `lib`-prefixed or
+  component library whose name contains neither (`cudnn`, `cutensor`, `cupti`,
+  `nccl`, `npp`, `nvjitlink`, `nvrtc`, `nvtx`, `nvcomp`, `cublas`, `cufft`,
+  `cufile`, `curand`, `cusolver`, `cusparse`, each optionally `lib`-prefixed or
   `-dev`-suffixed) is installed;
 - GTFock package metadata contains no CUDA requirement;
 - `pscf`, `libgtfock`, and `libcint` have no CUDA dynamic linkage; and
 - the installed two-rank numerical execution succeeds on the CPU.
 
-For a manual local install, use the override only on the create transaction:
+For a reusable local install, let the validator select the exact local
+version/build, then activate the prefix it created:
 
 ```bash
-CONDA_OVERRIDE_CUDA=12.0 conda create -n gtfock-package-test \
-  -c "file://$PWD/.conda-pkgs/output" -c conda-forge gtfock=0.1.0
-conda activate gtfock-package-test
-unset CONDA_OVERRIDE_CUDA
+./conda/validate-installed.sh
+conda activate "$PWD/.conda-envs/package-test"
 ```
+
+The override is scoped to the validator's create transaction and is not
+exported into the activated shell.
 
 ## Installed interface and optional Psi4 consumption
 
