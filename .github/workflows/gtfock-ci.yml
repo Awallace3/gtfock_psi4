@@ -18,10 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      # Solver-only workaround for the audited OpenMPI package's virtual
-      # __cuda constraint. The build and tests remain CPU-only and the package
-      # validation separately rejects CUDA dependencies and linkage.
-      CONDA_OVERRIDE_CUDA: "12.0"
       CMAKE_BUILD_PARALLEL_LEVEL: "4"
     defaults:
       run:
@@ -34,6 +30,11 @@ jobs:
 
       - name: Create validated toolchain environment
         uses: mamba-org/setup-micromamba@v2
+        env:
+          # Solver-only workaround for the audited OpenMPI package's virtual
+          # __cuda constraint. The build and tests remain CPU-only and the package
+          # validation separately rejects CUDA dependencies and linkage.
+          CONDA_OVERRIDE_CUDA: "12.0"
         with:
           environment-file: env.yml
           post-cleanup: all
