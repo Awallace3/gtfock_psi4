@@ -58,6 +58,7 @@ Simint vector backend.
 The build runs:
 
 - generated Simint tests;
+- fail-closed generated-Simint cleanup and no-CUDA link-classifier regressions;
 - an installed `pfock.h` public-header compile smoke test;
 - a configure-time refusal of GTFock sources without the corrected atomic;
 - the atomic Fock-update regression;

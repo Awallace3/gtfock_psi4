@@ -40,6 +40,16 @@ Fresh validation requires exactly one local artifact, selects its exact
 version/build from the strict-priority local channel, and verifies that exact
 package record after installation.
 
+### Lightweight packaging guard
+
+Pull requests and pushes to `main` run the
+[`Packaging guards`](../.github/workflows/packaging-guards.yml) GitHub Actions
+workflow. It checks shell and Python syntax and exercises the focused,
+dependency-free regressions for fail-closed generated-Simint cleanup and CUDA
+link-classification assertions. This lightweight check does not build or install
+the package; `./conda/build-local.sh` remains the authoritative full package
+gate.
+
 ### CPU-only OpenMPI metadata workaround
 
 The audited conda-forge OpenMPI 5.0.8 build has a `__cuda >=12` *virtual-package
