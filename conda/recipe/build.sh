@@ -74,80 +74,11 @@ done
 
 # Simint is generated and linked into libcint as a static implementation
 # detail. Its standalone archive and development metadata are not part of the
-# GTFock consumer ABI and conda-forge discourages shipping bundled static libs.
-# Decision CF-SIMINT-006 requires the removal to be verified rather than
-# assumed. $PREFIX is the shared conda-build host prefix holding every host
-# dependency, so remove exactly the files this build's Simint install recorded
-# rather than everything under $PREFIX whose name contains "simint"; anything
-# else matching afterwards belongs to a dependency and is reported, not deleted.
-simint_manifest="$GTF_BUILD_ROOT/simint/install_manifest.txt"
-if [[ ! -s $simint_manifest ]]; then
-    echo "No Simint install manifest at $simint_manifest: cannot prove which" \
-         "installed files CF-SIMINT-006 must remove" >&2
-    exit 1
-fi
-simint_artifacts=()
-while IFS= read -r path || [[ -n $path ]]; do
-    [[ -n $path ]] || continue
-    # CMake install manifests may contain redundant separators (for example
-    # include//simint). Normalize them so parent directories are deduplicated
-    # and pruned in a deterministic deepest-first order below.
-    path=$(realpath -m -- "$path")
-    if [[ $path != "$PREFIX"/* ]]; then
-        echo "Simint install manifest lists $path outside \$PREFIX" >&2
-        exit 1
-    fi
-    simint_artifacts+=("$path")
-done <"$simint_manifest"
-if ((${#simint_artifacts[@]} == 0)); then
-    echo "No installed Simint artifacts found: the build no longer installs" \
-         "the generated Simint that CF-SIMINT-006 removes" >&2
-    exit 1
-fi
-if [[ ! -f "$PREFIX/lib/libsimint.a" ]]; then
-    echo "Generated Simint did not install lib/libsimint.a; refusing to" \
-         "package an unverified Simint layout" >&2
-    exit 1
-fi
-if ! printf '%s\n' "${simint_artifacts[@]}" | grep -qxF "$PREFIX/lib/libsimint.a"; then
-    echo "lib/libsimint.a is not owned by the Simint install manifest;" \
-         "refusing to delete a file this build does not own" >&2
-    exit 1
-fi
-rm -f -- "${simint_artifacts[@]}"
-# Drop the directories the removed files leave behind, deepest first, so an
-# emptied include/simint tree does not ship as a stray empty directory. Only
-# directories that become empty are removed, and never $PREFIX itself.
-simint_directories=()
-for path in "${simint_artifacts[@]}"; do
-    directory=$(dirname -- "$path")
-    while [[ $directory == "$PREFIX"/* ]]; do
-        simint_directories+=("$directory")
-        directory=$(dirname -- "$directory")
-    done
-done
-while IFS= read -r directory; do
-    rmdir --ignore-fail-on-non-empty -- "$directory" 2>/dev/null || true
-done < <(
-    printf '%s\n' "${simint_directories[@]}" |
-        awk '{ print length($0), $0 }' |
-        sort -k1,1nr -k2,2r |
-        cut -d' ' -f2- |
-        awk '!seen[$0]++'
-)
-for path in "${simint_artifacts[@]}"; do
-    if [[ -e $path ]]; then
-        echo "Simint artifact survived removal: $path" >&2
-        exit 1
-    fi
-done
-simint_survivors=$(find "$PREFIX" -iname '*simint*' -not -path "$PREFIX/conda-meta/*" -print)
-if [[ -n $simint_survivors ]]; then
-    echo "Simint-named files remain under \$PREFIX but are not owned by this" \
-         "build's Simint install manifest; resolve before packaging:" >&2
-    printf '%s\n' "$simint_survivors" >&2
-    exit 1
-fi
+# GTFock consumer ABI. Remove only this build's manifest-owned artifacts and
+# fail closed if any unrecorded Simint surface remains (CF-SIMINT-006).
+# shellcheck source=conda/recipe/simint-cleanup.sh
+source "$SRC_DIR/conda/recipe/simint-cleanup.sh"
+gtf_cleanup_simint
 # grep exits 2 on an unreadable or missing operand, so "no match" alone would
 # let this assertion pass without reading the shipped metadata. Distinguish
 # "scanned and clean" (1) from every other outcome.

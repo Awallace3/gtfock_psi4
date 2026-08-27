@@ -290,6 +290,11 @@ endif()
 
 if(BUILD_TESTING)
   find_package(Python 3.12 REQUIRED COMPONENTS Interpreter)
+  find_program(BASH_EXECUTABLE bash REQUIRED)
+
+  add_test(NAME simint_cleanup_regression
+    COMMAND "${BASH_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_simint_cleanup.sh")
 
   add_executable(test_atomic_add tests/test_atomic_add.c)
   target_include_directories(test_atomic_add PRIVATE
