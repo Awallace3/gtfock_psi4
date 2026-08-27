@@ -49,9 +49,9 @@ names = {record["name"] for record in json.load(sys.stdin)}
 # CPU-only claim, so match the whole namespace rather than an ad hoc list:
 # "cuda"/"nvidia" anywhere in the name, plus the CUDA component libraries
 # whose names contain neither (optionally "lib"-prefixed and "-dev"-suffixed).
-CUDA_COMPONENTS = ("cudnn", "cutensor", "cupti", "nccl", "nvjitlink", "nvrtc",
-                   "nvtx", "nvcomp", "cublas", "cufft", "cufile", "curand",
-                   "cusolver", "cusparse")
+CUDA_COMPONENTS = ("cudnn", "cutensor", "cupti", "nccl", "npp", "nvjitlink",
+                   "nvrtc", "nvtx", "nvcomp", "cublas", "cufft", "cufile",
+                   "curand", "cusolver", "cusparse")
 def is_cuda(name):
     if "cuda" in name or "nvidia" in name:
         return True
