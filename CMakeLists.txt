@@ -295,6 +295,9 @@ if(BUILD_TESTING)
   add_test(NAME simint_cleanup_regression
     COMMAND "${BASH_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_simint_cleanup.sh")
+  add_test(NAME packaging_guard_regression
+    COMMAND "${BASH_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_packaging_guards.sh")
 
   add_executable(test_atomic_add tests/test_atomic_add.c)
   target_include_directories(test_atomic_add PRIVATE

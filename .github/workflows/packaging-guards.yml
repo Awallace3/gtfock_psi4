@@ -1,0 +1,33 @@
+name: Packaging guards
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  packaging-guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: |
+          bash -n \
+            build_deps.sh \
+            conda/build-local.sh \
+            conda/validate-installed.sh \
+            conda/recipe/build.sh \
+            conda/recipe/run_test.sh \
+            conda/recipe/grep-assert.sh \
+            conda/recipe/simint-cleanup.sh \
+            tests/test_simint_cleanup.sh \
+            tests/test_packaging_guards.sh
+      - name: Run focused packaging regressions
+        run: |
+          bash tests/test_simint_cleanup.sh
+          bash tests/test_packaging_guards.sh
+      - name: Check Python test syntax
+        run: python3 -m py_compile tests/test_pscf_regression.py
