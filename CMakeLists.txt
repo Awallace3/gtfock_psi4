@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 project(gtfock_psi4 VERSION 0.1.0 LANGUAGES C CXX Fortran)
 
 include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 include(CTest)
 
 set(CMAKE_C_STANDARD 11)
@@ -61,12 +62,35 @@ find_package(MPI REQUIRED COMPONENTS C)
 find_package(OpenMP REQUIRED COMPONENTS C)
 find_package(simint 0.8 CONFIG REQUIRED)
 
-# Search only the active environment/prefix for numerical libraries. This avoids
-# silently mixing conda MPI with host BLAS, LAPACK, or ScaLAPACK installations.
-set(_gtf_prefix_hints ${CMAKE_PREFIX_PATH})
-if(DEFINED ENV{CONDA_PREFIX})
-  list(PREPEND _gtf_prefix_hints "$ENV{CONDA_PREFIX}")
+# Search only the active conda host prefix for numerical libraries. A developer
+# environment uses CONDA_PREFIX, while conda-build splits compilers into
+# BUILD_PREFIX and link dependencies into PREFIX. Those two are honored only
+# when conda-build is actually driving the configure, so that a stray PREFIX
+# export in a developer shell can neither widen the search nor widen the
+# allow-list below - that would silently mix conda MPI with host BLAS, LAPACK,
+# or ScaLAPACK. BUILD_PREFIX holds compilers only and never supplies a
+# numerical library.
+set(_gtf_conda_build OFF)
+if((NOT "$ENV{CONDA_BUILD}" STREQUAL "" OR NOT "$ENV{CONDA_BUILD_STATE}" STREQUAL "")
+   AND NOT "$ENV{PREFIX}" STREQUAL "" AND NOT "$ENV{BUILD_PREFIX}" STREQUAL "")
+  set(_gtf_conda_build ON)
 endif()
+set(_gtf_host_prefixes "")
+set(_gtf_tool_prefixes "")
+if(_gtf_conda_build)
+  list(APPEND _gtf_host_prefixes "$ENV{PREFIX}")
+  list(APPEND _gtf_tool_prefixes "$ENV{BUILD_PREFIX}")
+elseif(NOT "$ENV{CONDA_PREFIX}" STREQUAL "")
+  list(APPEND _gtf_host_prefixes "$ENV{CONDA_PREFIX}")
+  list(APPEND _gtf_tool_prefixes "$ENV{CONDA_PREFIX}")
+endif()
+if(NOT _gtf_host_prefixes)
+  message(FATAL_ERROR
+    "Activate the supported conda environment (or build through conda-build)")
+endif()
+set(_gtf_prefix_hints ${CMAKE_PREFIX_PATH})
+list(PREPEND _gtf_prefix_hints ${_gtf_host_prefixes})
+list(REMOVE_DUPLICATES _gtf_prefix_hints)
 find_path(MKL_INCLUDE_DIR mkl.h HINTS ${_gtf_prefix_hints} PATH_SUFFIXES include REQUIRED)
 find_library(BLAS_LIBRARY NAMES blas HINTS ${_gtf_prefix_hints} PATH_SUFFIXES lib REQUIRED)
 find_library(LAPACK_LIBRARY NAMES lapack HINTS ${_gtf_prefix_hints} PATH_SUFFIXES lib REQUIRED)
@@ -75,25 +99,59 @@ find_library(MKL_SCALAPACK_LIBRARY NAMES mkl_scalapack_lp64
 find_library(MKL_BLACS_LIBRARY NAMES mkl_blacs_openmpi_lp64
   HINTS ${_gtf_prefix_hints} PATH_SUFFIXES lib REQUIRED)
 
-if(NOT DEFINED ENV{CONDA_PREFIX})
-  message(FATAL_ERROR "Activate the supported gtf2 conda environment")
-endif()
-set(_gtf_conda_prefix "$ENV{CONDA_PREFIX}")
+function(gtf_require_prefix label path prefixes)
+  # cmake_path(IS_PREFIX) is lexical, so both sides must be resolved first:
+  # build_deps.sh passes compilers through readlink -f while the environment
+  # still reports the unresolved prefix, and symlinked home directories are
+  # routine on the HPC/NFS hosts this stack targets.
+  file(REAL_PATH "${path}" _real_path)
+  set(_allowed OFF)
+  foreach(_prefix IN LISTS ${prefixes})
+    file(REAL_PATH "${_prefix}" _real_prefix)
+    cmake_path(IS_PREFIX _real_prefix "${_real_path}" NORMALIZE _in_prefix)
+    if(_in_prefix)
+      set(_allowed ON)
+      break()
+    endif()
+  endforeach()
+  if(NOT _allowed)
+    message(FATAL_ERROR
+      "${label} resolved outside the supported conda prefixes "
+      "(${${prefixes}}): ${path}")
+  endif()
+endfunction()
 foreach(_path IN ITEMS
-    CMAKE_C_COMPILER CMAKE_CXX_COMPILER CMAKE_Fortran_COMPILER
+    CMAKE_C_COMPILER CMAKE_CXX_COMPILER CMAKE_Fortran_COMPILER)
+  gtf_require_prefix("${_path}" "${${_path}}" _gtf_tool_prefixes)
+endforeach()
+foreach(_path IN ITEMS
     MKL_INCLUDE_DIR BLAS_LIBRARY LAPACK_LIBRARY
     MKL_SCALAPACK_LIBRARY MKL_BLACS_LIBRARY)
-  cmake_path(IS_PREFIX _gtf_conda_prefix "${${_path}}" NORMALIZE _in_conda)
-  if(NOT _in_conda)
-    message(FATAL_ERROR "${_path} resolved outside gtf2: ${${_path}}")
-  endif()
+  gtf_require_prefix("${_path}" "${${_path}}" _gtf_host_prefixes)
 endforeach()
+# FindMPI leaves MPI_C_LIBRARIES empty when the compiler has builtin MPI
+# support, which would let the MPI provenance gate below pass without
+# inspecting any MPI library at all.
+if(NOT MPI_C_LIBRARIES)
+  message(FATAL_ERROR
+    "FindMPI reported no MPI C libraries, so the MPI provenance of this build "
+    "cannot be verified; configure with a plain icx/icpx compiler and let "
+    "FindMPI locate the conda OpenMPI libraries instead of an MPI wrapper")
+endif()
 foreach(_mpi_library IN LISTS MPI_C_LIBRARIES)
-  cmake_path(IS_PREFIX _gtf_conda_prefix "${_mpi_library}" NORMALIZE _in_conda)
-  if(NOT _in_conda)
-    message(FATAL_ERROR "MPI resolved outside gtf2: ${_mpi_library}")
-  endif()
+  gtf_require_prefix("MPI" "${_mpi_library}" _gtf_host_prefixes)
 endforeach()
+if(NOT CMAKE_C_COMPILER_ID STREQUAL "IntelLLVM" OR
+   NOT CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+  message(FATAL_ERROR
+    "The validated C/C++ toolchain is IntelLLVM icx/icpx, but CMake found "
+    "${CMAKE_C_COMPILER_ID}/${CMAKE_CXX_COMPILER_ID}")
+endif()
+if(NOT CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+  message(FATAL_ERROR
+    "The validated ERD/OED Fortran toolchain is GNU Fortran, but CMake found "
+    "${CMAKE_Fortran_COMPILER_ID}")
+endif()
 
 add_library(gtf_numeric INTERFACE)
 target_include_directories(gtf_numeric INTERFACE "${MKL_INCLUDE_DIR}")
@@ -148,6 +206,12 @@ target_include_directories(cint PUBLIC
 target_compile_definitions(cint PRIVATE __ALIGNLEN__=64)
 target_link_libraries(cint PRIVATE simint::simint erd oed OpenMP::OpenMP_C m)
 gtf_target_defaults(cint)
+set_target_properties(cint PROPERTIES
+  EXPORT_NAME CInt
+  VERSION ${PROJECT_VERSION}
+  SOVERSION 0
+  INSTALL_RPATH "$ORIGIN")
+add_library(GTFock::CInt ALIAS cint)
 
 add_library(GTMatrix STATIC
   GTMatrix/GTMatrix_Typedef.c
@@ -162,6 +226,8 @@ target_include_directories(GTMatrix PUBLIC
   "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 target_link_libraries(GTMatrix PUBLIC MPI::MPI_C)
 gtf_target_defaults(GTMatrix)
+set_target_properties(GTMatrix PROPERTIES EXPORT_NAME GTMatrix)
+add_library(GTFock::GTMatrix ALIAS GTMatrix)
 
 set(_gtfock_sources
   "${GTF_GTFock_SOURCE_DIR}/pfock/fock_buf.c"
@@ -193,14 +259,19 @@ target_include_directories(gtfock PUBLIC
 target_include_directories(gtfock PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_definitions(gtfock PRIVATE __ALIGNLEN__=64 ${_gtf_jk_definitions})
-target_link_libraries(gtfock PUBLIC MPI::MPI_C)
-target_link_libraries(gtfock PRIVATE
-  cint GTMatrix simint::simint OpenMP::OpenMP_C gtf_numeric m)
+# The public header exposes MPI, OpenMP, CInt, and GTMatrix types. Preserve
+# those usage requirements in the installed target rather than relying on a
+# consumer to reconstruct this source-tree link line.
+target_link_libraries(gtfock PUBLIC
+  MPI::MPI_C OpenMP::OpenMP_C cint GTMatrix)
+target_link_libraries(gtfock PRIVATE simint::simint gtf_numeric m)
 gtf_target_defaults(gtfock)
 set_target_properties(gtfock PROPERTIES
+  EXPORT_NAME GTFock
   VERSION ${PROJECT_VERSION}
   SOVERSION 0
   INSTALL_RPATH "$ORIGIN")
+add_library(GTFock::GTFock ALIAS gtfock)
 
 if(GTF_BUILD_PSCF)
   add_executable(pscf
@@ -219,6 +290,14 @@ endif()
 
 if(BUILD_TESTING)
   find_package(Python 3.12 REQUIRED COMPONENTS Interpreter)
+  find_program(BASH_EXECUTABLE bash REQUIRED)
+
+  add_test(NAME simint_cleanup_regression
+    COMMAND "${BASH_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_simint_cleanup.sh")
+  add_test(NAME packaging_guard_regression
+    COMMAND "${BASH_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_packaging_guards.sh")
 
   add_executable(test_atomic_add tests/test_atomic_add.c)
   target_include_directories(test_atomic_add PRIVATE
@@ -239,8 +318,8 @@ if(BUILD_TESTING)
       "${MPIEXEC_EXECUTABLE}" ${GTF_MPIEXEC_PREFLAGS}
       "${MPIEXEC_NUMPROC_FLAG}" 2
       "$<TARGET_FILE:test_overlap>"
-      "${CMAKE_CURRENT_SOURCE_DIR}/GTFock/data/sto-3g.gbs"
-      "${CMAKE_CURRENT_SOURCE_DIR}/GTFock/data/water.xyz")
+      "${GTF_GTFock_SOURCE_DIR}/data/sto-3g.gbs"
+      "${GTF_GTFock_SOURCE_DIR}/data/water.xyz")
   set_tests_properties(legacy_mpi_overlap PROPERTIES TIMEOUT 120 PROCESSORS 2)
 
   add_test(NAME unpatched_source_rejected
@@ -262,6 +341,17 @@ if(BUILD_TESTING)
       "-DMPI_C_COMPILER=${MPI_C_COMPILER}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_installed_headers.cmake")
 
+  add_test(NAME relocated_cmake_consumer
+    COMMAND "${CMAKE_COMMAND}"
+      "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+      "-DSTAGE_DIR=${CMAKE_BINARY_DIR}/consumer-stage"
+      "-DRELOCATED_DIR=${CMAKE_BINARY_DIR}/relocated-test"
+      "-DCONSUMER_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/package-consumer"
+      "-DGENERATOR=${CMAKE_GENERATOR}"
+      "-DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_relocated_package.cmake")
+  set_tests_properties(relocated_cmake_consumer PROPERTIES TIMEOUT 300)
+
   if(GTF_BUILD_PSCF)
     set(_gtf_preflag_args "")
     foreach(_flag IN LISTS GTF_MPIEXEC_PREFLAGS)
@@ -273,17 +363,32 @@ if(BUILD_TESTING)
         --mpiexec "${MPIEXEC_EXECUTABLE}"
         ${_gtf_preflag_args}
         --pscf "$<TARGET_FILE:pscf>"
-        --root "${CMAKE_CURRENT_SOURCE_DIR}"
+        --data-dir "${GTF_GTFock_SOURCE_DIR}/data"
         --timeout 30)
     set_tests_properties(pscf_numerical_regression PROPERTIES
       TIMEOUT 150 PROCESSORS 2)
   endif()
 endif()
 
-install(TARGETS cint gtfock
-  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
-install(TARGETS GTMatrix erd oed
-  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+set(GTF_CMAKE_INSTALL_DIR
+  "${CMAKE_INSTALL_LIBDIR}/cmake/GTFock" CACHE STRING
+  "Install location for GTFock CMake package metadata")
+
+configure_package_config_file(
+  cmake/GTFockConfig.cmake.in
+  "${CMAKE_CURRENT_BINARY_DIR}/GTFockConfig.cmake"
+  INSTALL_DESTINATION "${GTF_CMAKE_INSTALL_DIR}")
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/GTFockConfigVersion.cmake"
+  VERSION "${PROJECT_VERSION}"
+  COMPATIBILITY SameMajorVersion)
+
+install(TARGETS cint GTMatrix gtfock
+  EXPORT GTFockTargets
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 if(GTF_BUILD_PSCF)
   install(TARGETS pscf RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
@@ -294,3 +399,15 @@ install(FILES
 install(DIRECTORY GTMatrix/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
   FILES_MATCHING PATTERN "*.h")
+install(FILES
+  "${GTF_GTFock_SOURCE_DIR}/data/sto-3g.gbs"
+  "${GTF_GTFock_SOURCE_DIR}/data/water.xyz"
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/gtfock/examples")
+install(EXPORT GTFockTargets
+  FILE GTFockTargets.cmake
+  NAMESPACE GTFock::
+  DESTINATION "${GTF_CMAKE_INSTALL_DIR}")
+install(FILES
+  "${CMAKE_CURRENT_BINARY_DIR}/GTFockConfig.cmake"
+  "${CMAKE_CURRENT_BINARY_DIR}/GTFockConfigVersion.cmake"
+  DESTINATION "${GTF_CMAKE_INSTALL_DIR}")

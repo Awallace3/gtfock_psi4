@@ -1,0 +1,35 @@
+# Immutable source manifest for a future staged-recipes/feedstock recipe.
+# This file is documentation, not a second build recipe. Replace meta.yaml's
+# local `source.path` with this `source` list after publishing a v0.1.0 release
+# archive and filling CF-SOURCE-002. Do not change the pinned component commits
+# without repeating the native numerical validation.
+source:
+  # CF-SOURCE-002: publish a public v0.1.0 superproject archive, then replace
+  # this placeholder with its SHA256. No package may be submitted before that.
+  - url: https://github.com/Awallace3/gtfock_psi4/archive/refs/tags/v0.1.0.tar.gz
+    sha256: REPLACE_AFTER_RELEASE_CF_SOURCE_002
+  - url: https://github.com/Awallace3/GTFock/archive/383dfba5f08a7f389855c0fa447508d1970a47bc.tar.gz
+    sha256: f3dff3c7511896174419fbe227bd021d00748df6ca365f5aae3721dc6d76275a
+    folder: GTFock
+  - url: https://github.com/Awallace3/GTMatrix/archive/8fd73d6abfdffe0af42104fa117d24ad3f95fee4.tar.gz
+    sha256: eca2111f5ba17120d553fdce07b552476cecdedb1e14c0078c11d487e9aee40e
+    folder: GTMatrix
+  - url: https://github.com/Awallace3/libcint/archive/7344f598fae04d4e342f180f4488fd215a785680.tar.gz
+    sha256: db45d79646ed1e408a1d3cdca60f44bce3f9cfea2b9ac515002d357dbbb61d26
+    folder: libcint
+  - url: https://github.com/Awallace3/OptErd_Makefile/archive/e84b2b943e2a95bd548724b3518107fa1875ef64.tar.gz
+    sha256: 3a51a66624a5550b52f4060e551868416a35cb5c2caed146f0a2c7e639575c46
+    folder: OptErd_Makefile
+  - url: https://github.com/simint-chem/simint-generator/archive/a497ec7e4a296c8d8be321c856e9119204ca7a20.tar.gz
+    sha256: eb92d14e9fb9794b2bd2aa77b8df4fe8e3f116c05c374aa50c5ad8712a48f199
+    folder: simint-generator
+
+component_versions:
+  superproject: 0.1.0
+  GTFock: 383dfba5f08a7f389855c0fa447508d1970a47bc
+  GTMatrix: 8fd73d6abfdffe0af42104fa117d24ad3f95fee4
+  libcint: 7344f598fae04d4e342f180f4488fd215a785680
+  OptErd_Makefile: e84b2b943e2a95bd548724b3518107fa1875ef64
+  simint-generator: a497ec7e4a296c8d8be321c856e9119204ca7a20
+patches:
+  - patches/gtfock-modern.patch

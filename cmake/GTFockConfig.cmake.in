@@ -1,0 +1,9 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(MPI COMPONENTS C)
+find_dependency(OpenMP COMPONENTS C)
+
+include("${CMAKE_CURRENT_LIST_DIR}/GTFockTargets.cmake")
+
+check_required_components(GTFock)

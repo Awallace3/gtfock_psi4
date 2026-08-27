@@ -38,6 +38,8 @@ simint_icc
 # Reproducible local validation artifacts
 .conda-envs/
 .conda-pkgs/
+.conda-source/
 _build/
 _install/
+_relocated-test/
 build/

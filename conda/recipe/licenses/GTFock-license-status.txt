@@ -1,0 +1,12 @@
+GTFock license status
+=====================
+
+The pinned GTFock source archive at commit
+383dfba5f08a7f389855c0fa447508d1970a47bc does not contain a top-level
+license file or source-file license notices. This notice is not a license grant.
+Public redistribution is blocked until the copyright holders add an explicit
+redistributable license. See decision CF-LICENSE-001 in docs/conda-packaging.md.
+
+The package preparation recipe remains usable for local validation only. It
+must not be published to conda-forge or another public channel while this
+LicenseRef remains unresolved.

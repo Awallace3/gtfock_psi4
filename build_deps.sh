@@ -29,34 +29,97 @@ while (($#)); do
     shift
 done
 
-if [[ -z ${CONDA_PREFIX:-} ]]; then
-    echo "Activate the gtf2 conda environment before building." >&2
+# conda-build splits compilers into BUILD_PREFIX and link dependencies into
+# PREFIX. Honor those only when conda-build is actually driving this run: a
+# stray PREFIX export in a developer shell must neither abort the build nor
+# widen the prefixes that tools and libraries are allowed to come from.
+if [[ -n ${CONDA_BUILD:-}${CONDA_BUILD_STATE:-} \
+      && -n ${PREFIX:-} && -n ${BUILD_PREFIX:-} ]]; then
+    HOST_PREFIX_CANDIDATES=("$PREFIX")
+    TOOL_PREFIX_CANDIDATES=("$BUILD_PREFIX")
+else
+    HOST_PREFIX_CANDIDATES=("${CONDA_PREFIX:-}")
+    TOOL_PREFIX_CANDIDATES=("${CONDA_PREFIX:-}")
+fi
+
+resolve_prefixes() {
+    local prefix
+    for prefix in "$@"; do
+        [[ -n $prefix && -d $prefix ]] || continue
+        (cd -- "$prefix" && pwd -P)
+    done
+}
+
+HOST_PREFIXES=()
+TOOL_PREFIXES=()
+while IFS= read -r prefix; do
+    HOST_PREFIXES+=("$prefix")
+done < <(resolve_prefixes "${HOST_PREFIX_CANDIDATES[@]}")
+while IFS= read -r prefix; do
+    TOOL_PREFIXES+=("$prefix")
+done < <(resolve_prefixes "${TOOL_PREFIX_CANDIDATES[@]}")
+
+CONDA_ROOTS=("${HOST_PREFIXES[@]}" "${TOOL_PREFIXES[@]}")
+if ((${#HOST_PREFIXES[@]} == 0)); then
+    echo "Activate the supported conda environment or run through conda-build." >&2
     exit 2
 fi
 
+path_is_in_conda() {
+    local path=$1 prefix
+    for prefix in "${CONDA_ROOTS[@]}"; do
+        [[ $path == "$prefix"/* ]] && return 0
+    done
+    return 1
+}
+
 for tool in cmake ninja python git icx icpx mpicc mpirun; do
     path=$(command -v "$tool" || true)
-    if [[ -z $path || $path != "$CONDA_PREFIX"/* ]]; then
-        echo "$tool must come from the active conda environment (found: ${path:-missing})." >&2
+    if [[ -z $path ]] || ! path_is_in_conda "$(readlink -f "$path")"; then
+        echo "$tool must come from a supported conda prefix (found: ${path:-missing})." >&2
         exit 2
     fi
 done
 
-CC=$(command -v icx)
-CXX=$(command -v icpx)
-FC=${FC:-"$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-gfortran"}
-if [[ ! -x $FC || $FC != "$CONDA_PREFIX"/* ]]; then
-    echo "Fortran compiler must come from the active conda environment: $FC" >&2
+CC=$(readlink -f "$(command -v icx)")
+CXX=$(readlink -f "$(command -v icpx)")
+if [[ -z ${FC:-} ]]; then
+    for prefix in "${TOOL_PREFIXES[@]}"; do
+        candidate="$prefix/bin/x86_64-conda-linux-gnu-gfortran"
+        if [[ -x $candidate ]]; then
+            FC=$candidate
+            break
+        fi
+    done
+fi
+FC=${FC:-}
+if [[ ! -x $FC ]] || ! path_is_in_conda "$(readlink -f "$FC")"; then
+    echo "GNU Fortran must come from a supported conda prefix: ${FC:-missing}" >&2
     exit 2
 fi
 
-if git -C "$ROOT" submodule status | grep -q '^-'; then
-    echo "Initialize pinned sources first: git submodule update --init --recursive" >&2
+# Only $ROOT's own repository can report on the pinned sources being compiled.
+# --is-inside-work-tree is true for any enclosing repository as well, so a
+# conda-build $SRC_DIR snapshot that happens to sit inside an unrelated
+# checkout would be judged by that checkout's submodules instead of the
+# pinned archives it actually contains.
+gtf_repo_root=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || true)
+if [[ -n $gtf_repo_root ]] &&
+   [[ $(cd -- "$gtf_repo_root" && pwd -P) == "$ROOT" ]]; then
+    if git -C "$ROOT" submodule status | grep -q '^-'; then
+        echo "Initialize pinned sources first: git submodule update --init --recursive" >&2
+        exit 2
+    fi
+elif [[ ${GTF_PINNED_SOURCE_ARCHIVES:-0} != 1 ]]; then
+    echo "Source archives require GTF_PINNED_SOURCE_ARCHIVES=1 from the pinned recipe." >&2
     exit 2
 fi
 
 if [[ $CLEAN == ON ]]; then
-    rm -rf -- "$BUILD_ROOT" "$INSTALL_PREFIX"
+    rm -rf -- "$BUILD_ROOT"
+    if [[ ${GTF_PRESERVE_INSTALL_PREFIX:-0} != 1 ]]; then
+        rm -rf -- "$INSTALL_PREFIX"
+    fi
 fi
 mkdir -p -- "$BUILD_ROOT" "$INSTALL_PREFIX"
 
@@ -108,11 +171,16 @@ rm -f -- "$GTF_SOURCE/.git"
 )
 
 echo "==> Configuring GTFock with icx/icpx and conda OpenMPI"
+# Only the host prefix may supply numerical libraries and MPI; BUILD_PREFIX
+# stays off CMAKE_PREFIX_PATH so a compiler-only prefix cannot satisfy them.
+PREFIX_PATHS=("$INSTALL_PREFIX" "${HOST_PREFIXES[@]}")
+CMAKE_PREFIXES=$(IFS=';'; echo "${PREFIX_PATHS[*]}")
+
 cmake -S "$ROOT" -B "$BUILD_ROOT/gtfock" \
     "${configure_common[@]}" \
     -DCMAKE_Fortran_COMPILER="$FC" \
     -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
-    -DCMAKE_PREFIX_PATH="$INSTALL_PREFIX;$CONDA_PREFIX" \
+    -DCMAKE_PREFIX_PATH="$CMAKE_PREFIXES" \
     -DGTF_GTFock_SOURCE_DIR="$GTF_SOURCE" \
     -DBUILD_TESTING="$RUN_TESTS"
 cmake --build "$BUILD_ROOT/gtfock" --parallel "$JOBS"
