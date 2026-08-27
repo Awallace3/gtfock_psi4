@@ -40,15 +40,20 @@ Fresh validation requires exactly one local artifact, selects its exact
 version/build from the strict-priority local channel, and verifies that exact
 package record after installation.
 
-### Lightweight packaging guard
+### Native continuous integration
 
 Pull requests and pushes to `main` run the
-[`Packaging guards`](../.github/workflows/packaging-guards.yml) GitHub Actions
-workflow. It checks shell and Python syntax and exercises the focused,
-dependency-free regressions for fail-closed generated-Simint cleanup and CUDA
-package- and shared-library-classification assertions. It does not build or
-install the package; the authoritative full package gate remains
-`./conda/build-local.sh`.
+[`GTFock CI`](../.github/workflows/gtfock-ci.yml) GitHub Actions workflow. It
+checks out the pinned submodules, creates the audited `env.yml` toolchain, and
+runs the canonical `./build_deps.sh --clean` build. That command executes the
+existing native CTest suite, including atomic operations, two-rank MPI overlap,
+source-patch enforcement, installed-header and relocated-CMake consumers, the
+two-rank `pscf` numerical regression, generated-Simint cleanup, and CUDA
+classifier behavior.
+
+The CI build validates GTFock itself. The heavier conda artifact construction,
+fresh-prefix installation, relocatability, dependency, and dynamic-linkage
+gate remains `./conda/build-local.sh`.
 
 ### CPU-only OpenMPI metadata workaround
 
