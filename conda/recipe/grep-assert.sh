@@ -4,7 +4,7 @@
 # "scanned and found nothing", so an unread file would satisfy the assertion.
 # Only status 1 proves the operand was scanned and is clean.
 
-GTF_CUDA_LINK_PATTERN='(^|[[:space:]/])(libcuda|libcudart|libcublas|libcudnn|libcufft|libcufile|libcupti|libcurand|libcusolver|libcusparse|libcutensor|libnv[^[:space:]/]*|libnccl|libnpp[^[:space:]/]*)[^[:space:]/]*\.so'
+GTF_CUDA_LINK_PATTERN='(^|[[:space:]/])(libcuda|libcudart|libcublas|libcudnn|libcudss|libcufft|libcufile|libcupti|libcurand|libcusolver|libcusparse|libcustatevec|libcutensor|libnv[^[:space:]/]*|libnccl|libnpp[^[:space:]/]*)[^[:space:]/]*\.so'
 
 gtf_grep_absent() {
     local label=$1

@@ -52,27 +52,7 @@ if [[ ! -x $PYTHON ]]; then
 fi
 
 list_json=$("$CONDA" list --prefix "$FRESH_PREFIX" --json)
-"$PYTHON" -c '
-import json, sys
-names = {record["name"] for record in json.load(sys.stdin)}
-# Any package carrying a CUDA runtime, stub, or math library disproves the
-# CPU-only claim, so match the whole namespace rather than an ad hoc list:
-# "cuda"/"nvidia" anywhere in the name, plus the CUDA component libraries
-# whose names contain neither (optionally "lib"-prefixed and "-dev"-suffixed).
-CUDA_COMPONENTS = ("cudnn", "cutensor", "cupti", "nccl", "npp", "nvjitlink",
-                   "nvrtc", "nvtx", "nvcomp", "cublas", "cufft", "cufile",
-                   "curand", "cusolver", "cusparse")
-def is_cuda(name):
-    if "cuda" in name or "nvidia" in name:
-        return True
-    stem = name[3:] if name.startswith("lib") else name
-    return any(stem == component or stem.startswith(component + "-")
-               for component in CUDA_COMPONENTS)
-forbidden = sorted(name for name in names if is_cuda(name))
-if forbidden:
-    raise SystemExit("CUDA packages entered CPU-only prefix: " + ", ".join(forbidden))
-print(f"fresh prefix contains {len(names)} packages and no CUDA package")
-' <<<"$list_json"
+"$PYTHON" "$ROOT/conda/recipe/assert-no-cuda-packages.py" <<<"$list_json"
 
 if [[ ! -f $package_metadata ]]; then
     echo "Exact local artifact was not installed: $package_record" >&2
