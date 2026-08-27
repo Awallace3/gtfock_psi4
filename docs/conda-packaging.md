@@ -46,9 +46,9 @@ Pull requests and pushes to `main` run the
 [`Packaging guards`](../.github/workflows/packaging-guards.yml) GitHub Actions
 workflow. It checks shell and Python syntax and exercises the focused,
 dependency-free regressions for fail-closed generated-Simint cleanup and CUDA
-link-classification assertions. This lightweight check does not build or install
-the package; `./conda/build-local.sh` remains the authoritative full package
-gate.
+package- and shared-library-classification assertions. It does not build or
+install the package; the authoritative full package gate remains
+`./conda/build-local.sh`.
 
 ### CPU-only OpenMPI metadata workaround
 
