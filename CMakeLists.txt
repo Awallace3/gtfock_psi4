@@ -213,6 +213,25 @@ set_target_properties(cint PROPERTIES
   INSTALL_RPATH "$ORIGIN")
 add_library(GTFock::CInt ALIAS cint)
 
+# Density-fitted J/K integrals. libcint has no auxiliary basis, three-center, or
+# two-center Coulomb entry point, so this drives Simint directly over a
+# primary/auxiliary basis pair. See docs/distributed-df.md.
+add_library(gtfockdf SHARED src/gtfock_df.c)
+target_include_directories(gtfockdf PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
+  "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+# cint carries the libcint include directory, which supplies both the public
+# CInt.h and the internal cint_def.h that exposes struct BasisSet.
+target_link_libraries(gtfockdf PUBLIC cint)
+target_link_libraries(gtfockdf PRIVATE simint::simint m)
+gtf_target_defaults(gtfockdf)
+set_target_properties(gtfockdf PROPERTIES
+  EXPORT_NAME GTFockDF
+  VERSION ${PROJECT_VERSION}
+  SOVERSION 0
+  INSTALL_RPATH "$ORIGIN")
+add_library(GTFock::GTFockDF ALIAS gtfockdf)
+
 add_library(GTMatrix STATIC
   GTMatrix/GTMatrix_Typedef.c
   GTMatrix/GTMatrix_Get.c
@@ -305,6 +324,11 @@ if(BUILD_TESTING)
   target_link_libraries(test_atomic_add PRIVATE OpenMP::OpenMP_C)
   add_test(NAME atomic_add COMMAND test_atomic_add)
 
+  add_executable(test_df_ints tests/test_df_ints.c)
+  target_link_libraries(test_df_ints PRIVATE gtfockdf cint m)
+  add_test(NAME df_integrals COMMAND test_df_ints)
+  set_tests_properties(df_integrals PROPERTIES TIMEOUT 120)
+
   add_executable(test_overlap tests/test_overlap.c)
   target_include_directories(test_overlap PRIVATE
     "${GTF_GTFock_SOURCE_DIR}/pfock"
@@ -383,7 +407,7 @@ write_basic_package_version_file(
   VERSION "${PROJECT_VERSION}"
   COMPATIBILITY SameMajorVersion)
 
-install(TARGETS cint GTMatrix gtfock
+install(TARGETS cint gtfockdf GTMatrix gtfock
   EXPORT GTFockTargets
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -394,6 +418,7 @@ if(GTF_BUILD_PSCF)
 endif()
 install(FILES
   libcint/CInt.h
+  src/gtfock_df.h
   "${GTF_GTFock_SOURCE_DIR}/pfock/pfock.h"
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY GTMatrix/

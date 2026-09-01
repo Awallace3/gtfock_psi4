@@ -12,9 +12,11 @@ for path in \
     "$PREFIX/bin/pscf" \
     "$PREFIX/lib/libgtfock.so" \
     "$PREFIX/lib/libcint.so" \
+    "$PREFIX/lib/libgtfockdf.so" \
     "$PREFIX/lib/libGTMatrix.a" \
     "$PREFIX/include/pfock.h" \
     "$PREFIX/include/CInt.h" \
+    "$PREFIX/include/gtfock_df.h" \
     "$PREFIX/lib/cmake/GTFock/GTFockConfig.cmake" \
     "$PREFIX/share/gtfock/examples/sto-3g.gbs" \
     "$PREFIX/share/gtfock/examples/water.xyz"; do
@@ -53,7 +55,8 @@ gtf_grep_absent "gtfock package metadata unexpectedly mentions CUDA" \
 # every runtime search path is $ORIGIN-relative or inside the installed prefix.
 # Match CUDA-family shared-library basenames rather than the substring "cuda",
 # which also occurs inside unrelated ICU's libicudata.so.
-for binary in "$PREFIX/bin/pscf" "$PREFIX/lib/libgtfock.so" "$PREFIX/lib/libcint.so"; do
+for binary in "$PREFIX/bin/pscf" "$PREFIX/lib/libgtfock.so" \
+    "$PREFIX/lib/libcint.so" "$PREFIX/lib/libgtfockdf.so"; do
     report=$(basename "$binary")
     ldd "$binary" | tee "$report.ldd"
     gtf_grep_absent "$binary has unresolved libraries" \

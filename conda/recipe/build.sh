@@ -60,9 +60,11 @@ for required in \
     "$PREFIX/bin/pscf" \
     "$PREFIX/lib/libgtfock.so" \
     "$PREFIX/lib/libcint.so" \
+    "$PREFIX/lib/libgtfockdf.so" \
     "$PREFIX/lib/libGTMatrix.a" \
     "$PREFIX/include/pfock.h" \
     "$PREFIX/include/CInt.h" \
+    "$PREFIX/include/gtfock_df.h" \
     "$PREFIX/lib/cmake/GTFock/GTFockTargets.cmake" \
     "$PREFIX/share/gtfock/examples/sto-3g.gbs" \
     "$PREFIX/share/gtfock/examples/water.xyz"; do
@@ -106,9 +108,11 @@ installed_artifacts=(
     "$PREFIX"/bin/pscf
     "$PREFIX"/lib/libgtfock.so*
     "$PREFIX"/lib/libcint.so*
+    "$PREFIX"/lib/libgtfockdf.so*
     "$PREFIX"/lib/libGTMatrix.a
     "$PREFIX"/include/pfock.h
     "$PREFIX"/include/CInt.h
+    "$PREFIX"/include/gtfock_df.h
     "$PREFIX"/lib/cmake/GTFock
     "$PREFIX"/share/gtfock
 )

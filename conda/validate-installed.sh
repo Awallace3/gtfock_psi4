@@ -65,7 +65,8 @@ gtf_grep_absent "gtfock package metadata unexpectedly mentions CUDA" \
 # which also occurs inside unrelated ICU's libicudata.so.
 for binary in "$FRESH_PREFIX/bin/pscf" \
               "$FRESH_PREFIX/lib/libgtfock.so" \
-              "$FRESH_PREFIX/lib/libcint.so"; do
+              "$FRESH_PREFIX/lib/libcint.so" \
+              "$FRESH_PREFIX/lib/libgtfockdf.so"; do
     links=$(ldd "$binary")
     printf '%s\n' "$links"
     gtf_grep_absent "$binary has unresolved libraries" \
