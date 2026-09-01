@@ -53,6 +53,17 @@ int GTFDF_nPriFuncs(GTFDF_t df);
 int GTFDF_priShellDim(GTFDF_t df, int shell);
 int GTFDF_priFuncStart(GTFDF_t df, int shell);
 
+/*
+ * Largest angular momentum the linked Simint was generated for, read from
+ * Simint itself. libcint's _SIMINT_OSTEI_MAXAM is a separate hardcoded value
+ * that can be lower, and is not what bounds this engine. Simint dispatches
+ * through generated tables indexed by angular momentum with no bound check, so
+ * a shell above this ceiling would read past them rather than fail; callers
+ * that build their own basis sets should screen for it. GTFDF_create refuses
+ * such a basis, but only after the caller has already imported it.
+ */
+int GTFDF_maxSupportedAM(void);
+
 int GTFDF_nAuxShells(GTFDF_t df);
 int GTFDF_nAuxFuncs(GTFDF_t df);
 int GTFDF_auxShellDim(GTFDF_t df, int shell);

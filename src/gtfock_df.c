@@ -139,6 +139,15 @@ CIntStatus_t GTFDF_create(BasisSet_t primary, BasisSet_t auxiliary,
     s->max_am = (int) primary->max_momentum;
     if ((int) auxiliary->max_momentum > s->max_am)
         s->max_am = (int) auxiliary->max_momentum;
+    if (s->max_am > SIMINT_OSTEI_MAXAM)
+    {
+        fprintf(stderr,
+                "GTFDF_create: angular momentum %d exceeds the maximum of %d "
+                "this Simint was generated for\n",
+                s->max_am, SIMINT_OSTEI_MAXAM);
+        GTFDF_destroy(s);
+        return CINT_STATUS_INVALID_VALUE;
+    }
 
     /* Sized from the observed angular momenta, never from libcint's
      * _SIMINT_OSTEI_MAXAM, which is stale against the generated Simint. */
@@ -303,6 +312,8 @@ int GTFDF_nPriShells(GTFDF_t df) { return df->nsh_p; }
 int GTFDF_nPriFuncs(GTFDF_t df) { return df->nbf_p; }
 int GTFDF_priShellDim(GTFDF_t df, int shell) { return df->pri_dim[shell]; }
 int GTFDF_priFuncStart(GTFDF_t df, int shell) { return df->pri_start[shell]; }
+
+int GTFDF_maxSupportedAM(void) { return SIMINT_OSTEI_MAXAM; }
 
 int GTFDF_nAuxShells(GTFDF_t df) { return df->nsh_a; }
 int GTFDF_nAuxFuncs(GTFDF_t df) { return df->nbf_a; }
