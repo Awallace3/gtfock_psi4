@@ -213,17 +213,21 @@ set_target_properties(cint PROPERTIES
   INSTALL_RPATH "$ORIGIN")
 add_library(GTFock::CInt ALIAS cint)
 
-# Density-fitted J/K integrals. libcint has no auxiliary basis, three-center, or
-# two-center Coulomb entry point, so this drives Simint directly over a
-# primary/auxiliary basis pair. See docs/distributed-df.md.
-add_library(gtfockdf SHARED src/gtfock_df.c)
+# Density-fitted J/K. libcint has no auxiliary basis, three-center, or
+# two-center Coulomb entry point, so gtfock_df.c drives Simint directly over a
+# primary/auxiliary basis pair; gtfock_pdf.c distributes the fitted tensor over
+# MPI ranks and contracts it. See docs/distributed-df.md.
+add_library(gtfockdf SHARED src/gtfock_df.c src/gtfock_pdf.c)
 target_include_directories(gtfockdf PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
   "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 # cint carries the libcint include directory, which supplies both the public
 # CInt.h and the internal cint_def.h that exposes struct BasisSet.
-target_link_libraries(gtfockdf PUBLIC cint)
-target_link_libraries(gtfockdf PRIVATE simint::simint m)
+# gtfock_pdf.h exposes MPI_Comm, so MPI stays in the interface; OpenMP and the
+# BLAS/LAPACK stack are implementation details.
+target_link_libraries(gtfockdf PUBLIC cint MPI::MPI_C)
+target_link_libraries(gtfockdf PRIVATE
+  simint::simint OpenMP::OpenMP_C gtf_numeric m)
 gtf_target_defaults(gtfockdf)
 set_target_properties(gtfockdf PROPERTIES
   EXPORT_NAME GTFockDF
@@ -329,6 +333,23 @@ if(BUILD_TESTING)
   add_test(NAME df_integrals COMMAND test_df_ints)
   set_tests_properties(df_integrals PROPERTIES TIMEOUT 120)
 
+  add_executable(test_pdf_jk tests/test_pdf_jk.c)
+  target_link_libraries(test_pdf_jk PRIVATE gtfockdf cint MPI::MPI_C m)
+  # Three ranks is the interesting count: the AO-element partition leaves one
+  # rank with no shell pairs, so it exercises the empty-block paths in Phase A
+  # and in the redistribution.
+  foreach(_np 1 2 3)
+    add_test(NAME df_distributed_jk_np${_np}
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "OMP_NUM_THREADS=1"
+        "MKL_NUM_THREADS=1"
+        "${MPIEXEC_EXECUTABLE}" ${GTF_MPIEXEC_PREFLAGS}
+        "${MPIEXEC_NUMPROC_FLAG}" ${_np}
+        "$<TARGET_FILE:test_pdf_jk>")
+    set_tests_properties(df_distributed_jk_np${_np} PROPERTIES
+      TIMEOUT 120 PROCESSORS ${_np})
+  endforeach()
+
   add_executable(test_overlap tests/test_overlap.c)
   target_include_directories(test_overlap PRIVATE
     "${GTF_GTFock_SOURCE_DIR}/pfock"
@@ -419,6 +440,7 @@ endif()
 install(FILES
   libcint/CInt.h
   src/gtfock_df.h
+  src/gtfock_pdf.h
   "${GTF_GTFock_SOURCE_DIR}/pfock/pfock.h"
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY GTMatrix/

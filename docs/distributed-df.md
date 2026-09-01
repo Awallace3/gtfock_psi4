@@ -44,17 +44,32 @@ bulk redistribution is paid once, at setup.
 - **B. Fit (local GEMM).** The metric power `J^-1/2` is replicated
   (`naux^2 * 8 B ~= 392 MB` at `naux = 7000`, affordable), so `B[all Q][local mn]`
   is one local `dgemm`.
-- **C. Redistribute (one `MPI_Alltoallv`).** Transpose the ownership from
-  `all Q / local mn` to `local Q / all mn`, in `mn` chunks. Moves the whole
-  tensor exactly once for the lifetime of the SCF.
+- **C. Redistribute (phased pairwise `MPI_Sendrecv`).** Transpose the ownership
+  from `all Q / local mn` to `local Q / all mn`. Moves the whole tensor exactly
+  once for the lifetime of the SCF.
 - **Per iteration.** Local half-transform, local partial `J` and `K`, then a
   single `MPI_Allreduce` of `2 * nbf^2` doubles - 27 MB at `nbf = 1863`,
   negligible against the integral work it replaces.
 
-The MVP forms `J^-1/2` with a replicated symmetric eigendecomposition; the
-`gtf2` environment routes LAPACK to threaded OpenBLAS, so this is not serial.
-MKL ScaLAPACK is already linked through the `gtf_numeric` interface target and
-is the documented upgrade when `naux^2` stops fitting comfortably.
+`MPI_Alltoallw` would express phase C in one call, and was rejected: its
+displacements are byte counts in `int`, which overflow at the ~24 GB/rank this
+exists to make possible, and chunking the `mn` axis shrinks the message but not
+the send displacement. The phased `MPI_Sendrecv` loop sends the same number of
+messages, needs no packing buffer - the receive side uses an `MPI_Type_vector`
+to land each peer's columns directly in place - and has no such ceiling.
+
+The MVP forms `J^-1/2` with a replicated symmetric eigendecomposition, so every
+rank spends `O(naux^3)` on identical data and holds `naux^2` doubles twice
+during setup. MKL ScaLAPACK is already linked through the `gtf_numeric`
+interface target and is the documented upgrade when `naux^2` stops fitting
+comfortably. Peak memory during setup is otherwise twice the steady-state
+tensor: phase B needs `A` and `B` simultaneously, and so does phase C.
+
+Two smaller MVP shortcuts, both local and both replaceable without touching the
+interface: `K` densifies one auxiliary function at a time into an `nbf^2`
+buffer instead of batching several `Q` into one GEMM, and the shell-pair
+partition is a static balance on AO-element count rather than on measured
+integral cost.
 
 ## Integral layer
 
@@ -93,9 +108,26 @@ does not consult `_SIMINT_OSTEI_MAXAM`.
 ## Where the code lives
 
 The kernel is project-owned and lives in `src/`, because pinned submodules stay
-immutable. It exports as `GTFock::GTFockDF`. The Psi4 `JK` subclass that
-consumes it belongs in Psi4's own `libfock`, not here - this repository's
-milestone is the native foundation and its CMake interface.
+immutable. Both files ship in `GTFock::GTFockDF`:
+
+- `src/gtfock_df.c` / `gtfock_df.h` - the serial integral layer above
+  (`GTFDF_compute3c`, `GTFDF_compute2c`). No MPI.
+- `src/gtfock_pdf.c` / `gtfock_pdf.h` - phases A/B/C and the per-iteration
+  contraction (`PDF_create`, `PDF_computeJK`, `PDF_destroy`). `PDF_create` is
+  collective over a duplicated communicator and does all the expensive work;
+  `PDF_computeJK` takes a replicated density and occupied coefficients and
+  returns replicated `J` and `K`.
+
+Because `gtfock_pdf.h` names `MPI_Comm`, `MPI::MPI_C` is a public dependency of
+the exported target; OpenMP and BLAS/LAPACK stay private. BLAS and LAPACK are
+called through the LP64 Fortran symbols (`dgemm_`, `dgemv_`, `dsyrk_`,
+`dsyev_`) declared in the translation unit rather than through `<mkl.h>`, so
+the file builds unchanged against either MKL or the netlib libraries that
+`gtf_numeric` also carries.
+
+The Psi4 `JK` subclass that consumes this belongs in Psi4's own `libfock`, not
+here - this repository's milestone is the native foundation and its CMake
+interface.
 
 ## Validation without committed reference data
 
@@ -110,6 +142,21 @@ milestone is the native foundation and its CMake interface.
    which skips its own `normalization()` entirely. This validates the zero shell
    and the normalization chain to ~1e-13.
 2. **RI reconstruction.** `(mn|rs) ~= sum_PQ (mn|P) [J^-1][PQ] (Q|rs)` against
-   libcint's exact four-center path. The fitting error makes this a loose check
-   (1e-3), but the bugs it exists to catch - transposed AO ordering, a dropped
-   normalization, a mis-sized shell block - are `O(1)` errors, not `1e-3` ones.
+   libcint's exact four-center path. The auxiliary basis is built to span the
+   primary products *exactly* - one `s` primitive on A and one `p` primitive on
+   B, fitted by `s(2a)` at A, `s(a+b)` and `p(a+b)` at the Gaussian product
+   center, and Cartesian `d(2b)` at B - so Coulomb fitting has zero error and
+   the comparison runs at machine precision (tol 1e-9, observed ~3e-14) rather
+   than at fitting accuracy.
+
+`tests/test_pdf_jk.c` checks the distributed build the same way, and is
+registered at 1, 2, and 3 ranks. A third primary shell on a third center
+extends the exact-span construction to six shell pairs and 17 auxiliary
+functions, so DF `J` and `K` must equal the exact four-center matrices to
+machine precision (observed ~1e-15). It also asserts that both partitions cover
+their axis exactly once, that `J` and `K` come back identical on every rank, and
+that asking for one matrix does not change the other. Three ranks is the
+interesting count: the 9-element `(p,p)` block cannot be split, so one rank
+receives no shell pairs at all and the empty-block paths in phase A and in the
+redistribution run. The test asserts that too, rather than leaving it to
+coincidence.

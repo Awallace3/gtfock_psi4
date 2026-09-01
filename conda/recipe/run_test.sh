@@ -17,6 +17,7 @@ for path in \
     "$PREFIX/include/pfock.h" \
     "$PREFIX/include/CInt.h" \
     "$PREFIX/include/gtfock_df.h" \
+    "$PREFIX/include/gtfock_pdf.h" \
     "$PREFIX/lib/cmake/GTFock/GTFockConfig.cmake" \
     "$PREFIX/share/gtfock/examples/sto-3g.gbs" \
     "$PREFIX/share/gtfock/examples/water.xyz"; do

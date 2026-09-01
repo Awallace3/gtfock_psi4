@@ -96,8 +96,8 @@ The package installs:
 
 - `lib/libgtfock.so.0`, `lib/libcint.so.0`, `lib/libgtfockdf.so.0`, and
   `lib/libGTMatrix.a`;
-- the complete public `pfock.h`, `CInt.h`, `gtfock_df.h`, and GTMatrix header
-  set;
+- the complete public `pfock.h`, `CInt.h`, `gtfock_df.h`, `gtfock_pdf.h`, and
+  GTMatrix header set;
 - `lib/cmake/GTFock/GTFockConfig.cmake` and relocatable imported targets
   `GTFock::GTFock`, `GTFock::CInt`, `GTFock::GTFockDF`, and
   `GTFock::GTMatrix`;

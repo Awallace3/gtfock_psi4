@@ -65,6 +65,7 @@ for required in \
     "$PREFIX/include/pfock.h" \
     "$PREFIX/include/CInt.h" \
     "$PREFIX/include/gtfock_df.h" \
+    "$PREFIX/include/gtfock_pdf.h" \
     "$PREFIX/lib/cmake/GTFock/GTFockTargets.cmake" \
     "$PREFIX/share/gtfock/examples/sto-3g.gbs" \
     "$PREFIX/share/gtfock/examples/water.xyz"; do
@@ -113,6 +114,7 @@ installed_artifacts=(
     "$PREFIX"/include/pfock.h
     "$PREFIX"/include/CInt.h
     "$PREFIX"/include/gtfock_df.h
+    "$PREFIX"/include/gtfock_pdf.h
     "$PREFIX"/lib/cmake/GTFock
     "$PREFIX"/share/gtfock
 )

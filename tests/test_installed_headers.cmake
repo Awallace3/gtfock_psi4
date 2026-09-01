@@ -44,3 +44,19 @@ if(NOT df_result EQUAL 0)
     "installed gtfock_df.h is not self-contained (${df_result})\n"
     "${df_output}${df_error}")
 endif()
+
+set(pdf_source "${STAGE_DIR}/installed_pdf_header_smoke.c")
+file(WRITE "${pdf_source}"
+  "#include <gtfock_pdf.h>\n"
+  "int main(void) { PDF_t pdf = 0; return pdf != 0; }\n")
+execute_process(
+  COMMAND "${MPI_C_COMPILER}" -std=c11 -fsyntax-only
+          "-I${STAGE_DIR}/include" "${pdf_source}"
+  RESULT_VARIABLE pdf_result
+  OUTPUT_VARIABLE pdf_output
+  ERROR_VARIABLE pdf_error)
+if(NOT pdf_result EQUAL 0)
+  message(FATAL_ERROR
+    "installed gtfock_pdf.h is not self-contained (${pdf_result})\n"
+    "${pdf_output}${pdf_error}")
+endif()
