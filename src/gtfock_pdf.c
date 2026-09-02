@@ -57,6 +57,10 @@ struct PDF
 
     /* Wall seconds per PDF_create phase; zeroed by the calloc in PDF_create. */
     double phase_s[PDF_NPHASES];
+    /* Wall seconds per PDF_computeJK part, accumulated over calls, and the
+     * number of calls that got as far as the reduction. */
+    double jk_phase_s[PDF_NJKPHASES];
+    int jk_calls;
 
     /* Unique primary shell pairs (M >= N), ordered by M then N. */
     int npair;
@@ -727,6 +731,8 @@ CIntStatus_t PDF_computeJK(PDF_t pdf, const double *D, const double *Cocc,
 
     memset(pdf->jkbuf, 0, sizeof(double) * 2 * nbf2);
 
+    double t0 = MPI_Wtime();
+
     if (J != NULL && pdf->q_local > 0)
     {
         /*
@@ -806,9 +812,19 @@ CIntStatus_t PDF_computeJK(PDF_t pdf, const double *D, const double *Cocc,
         }
     }
 
+    pdf->jk_phase_s[PDF_JK_LOCAL] += MPI_Wtime() - t0;
+
+    t0 = MPI_Wtime();
+    if (MPI_Barrier(pdf->comm) != MPI_SUCCESS)
+        return CINT_STATUS_EXECUTION_FAILED;
+    pdf->jk_phase_s[PDF_JK_SKEW] += MPI_Wtime() - t0;
+
+    t0 = MPI_Wtime();
     if (MPI_Allreduce(MPI_IN_PLACE, pdf->jkbuf, (int) (2 * nbf2), MPI_DOUBLE,
                       MPI_SUM, pdf->comm) != MPI_SUCCESS)
         return CINT_STATUS_EXECUTION_FAILED;
+    pdf->jk_phase_s[PDF_JK_COMM] += MPI_Wtime() - t0;
+    pdf->jk_calls++;
     if (failed) return CINT_STATUS_ALLOC_FAILED;
 
     if (J != NULL) memcpy(J, Jloc, sizeof(double) * nbf2);
@@ -838,6 +854,25 @@ double PDF_phaseSeconds(PDF_t pdf, PDF_Phase phase)
 {
     if (pdf == NULL || phase < 0 || phase >= PDF_NPHASES) return 0.0;
     return pdf->phase_s[phase];
+}
+
+double PDF_jkPhaseSeconds(PDF_t pdf, PDF_JKPhase phase)
+{
+    if (pdf == NULL || phase < 0 || phase >= PDF_NJKPHASES) return 0.0;
+    return pdf->jk_phase_s[phase];
+}
+
+int PDF_jkCalls(PDF_t pdf) { return (pdf == NULL) ? 0 : pdf->jk_calls; }
+
+const char *PDF_jkPhaseName(PDF_JKPhase phase)
+{
+    switch (phase)
+    {
+        case PDF_JK_LOCAL: return "jk_local";
+        case PDF_JK_SKEW:  return "jk_skew";
+        case PDF_JK_COMM:  return "jk_comm";
+        default:           return NULL;
+    }
 }
 
 const char *PDF_phaseName(PDF_Phase phase)

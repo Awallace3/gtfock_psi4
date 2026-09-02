@@ -55,7 +55,8 @@ CIntStatus_t PDF_destroy(PDF_t pdf);
  * J, K are nbf x nbf row-major outputs, overwritten and fully replicated on
  *      return. Either may be NULL to skip that matrix.
  *
- * Collective over comm; one MPI_Allreduce of 2 * nbf^2 doubles.
+ * Collective over comm; one MPI_Barrier and one MPI_Allreduce of 2 * nbf^2
+ * doubles. See PDF_JKPhase for why the barrier is there.
  */
 CIntStatus_t PDF_computeJK(PDF_t pdf, const double *D, const double *Cocc,
                            int nocc, double *J, double *K);
@@ -101,6 +102,33 @@ typedef enum
 double PDF_phaseSeconds(PDF_t pdf, PDF_Phase phase);
 /* A stable short name for each phase; NULL for an out-of-range value. */
 const char *PDF_phaseName(PDF_Phase phase);
+
+/*
+ * Wall seconds this rank has accumulated in each part of PDF_computeJK, summed
+ * over every call so far. Together they account for the whole call to within
+ * the two memcpys of the result.
+ *
+ * A plain Allreduce would fold two unrelated costs into one number: moving
+ * 2 * nbf^2 doubles, and waiting for whichever rank reached the call last. Those
+ * scale differently and have different fixes, and telling them apart is the
+ * whole point of measuring here, so a barrier drains the skew into its own
+ * clock first. It is not free, but it costs one empty collective against an
+ * Allreduce of megabytes, and the sum of the two is what an unbarriered
+ * Allreduce would have cost anyway.
+ */
+typedef enum
+{
+    PDF_JK_LOCAL = 0, /* contracting this rank's tensor rows against D and Cocc */
+    PDF_JK_SKEW,      /* barrier: waiting for the last rank to finish its rows */
+    PDF_JK_COMM,      /* the Allreduce itself, with the skew already drained */
+    PDF_NJKPHASES
+} PDF_JKPhase;
+
+double PDF_jkPhaseSeconds(PDF_t pdf, PDF_JKPhase phase);
+/* A stable short name for each part; NULL for an out-of-range value. */
+const char *PDF_jkPhaseName(PDF_JKPhase phase);
+/* Calls to PDF_computeJK that reached the reduction, for a per-call average. */
+int PDF_jkCalls(PDF_t pdf);
 
 #ifdef __cplusplus
 }
