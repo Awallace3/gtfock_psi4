@@ -45,6 +45,33 @@ extern void dpstrf_(const char *uplo, const int *n, double *a, const int *lda,
 
 #define PDF_DEFAULT_COND 1e-12
 
+/*
+ * Auxiliary functions whose half-transforms share one dsyrk, as a byte budget
+ * on the nbf x q_batch x nocc buffer plus a hard cap. Batching amortises the
+ * pass over the nbf x nbf exchange accumulator; past a handful of auxiliary
+ * functions that pass is no longer what the loop is waiting for, and the
+ * buffer is pure overhead.
+ */
+#define PDF_K_BATCH_BYTES ((size_t) 32 * 1024 * 1024)
+#define PDF_K_MAX_BATCH 16
+
+/*
+ * AO rows in one thread's band of densified B_Q rows. This is the exchange
+ * half-transform's blocking, and both ends of the range cost. Too few rows and
+ * the GEMM behind the band is too narrow to amortise its own setup: at one
+ * shell per band, two or three rows wide, the build ran an order of magnitude
+ * slower than the dense scatter this replaced. Too many and the band stops
+ * fitting in L2 alongside Cocc, which puts the densified rows back out to
+ * memory and gives up the whole point of banding.
+ *
+ * Measured on a 24-core socket with 512 KiB of L2 per core, the cost is flat
+ * from about 16 to 48 rows on both a 574- and a 260-function case, and rises on
+ * either side; 32 is the middle of that plateau. A band is 32 * nbf doubles per
+ * thread, so the scratch stays small and, unlike the nbf^2 slice it replaced,
+ * does not grow with the system.
+ */
+#define PDF_PANEL_ROWS 32
+
 struct PDF
 {
     MPI_Comm comm;
@@ -52,6 +79,8 @@ struct PDF
 
     GTFDF_t df;
     int nbf, naux, nsh_p, nsh_a;
+    /* Largest primary shell dimension. */
+    int max_dim;
     /* Rows the metric factorization retained, and the ones it dropped. */
     int nfit, nnull;
 
@@ -62,7 +91,8 @@ struct PDF
     double jk_phase_s[PDF_NJKPHASES];
     int jk_calls;
 
-    /* Unique primary shell pairs (M >= N), ordered by M then N. */
+    /* Unique primary shell pairs (M >= N), ordered by M then N, so the block
+     * for a pair sits at index M * (M + 1) / 2 + N. */
     int npair;
     int *pair_m, *pair_n;
     /* AO-element offset of each pair's block, npair + 1 entries. */
@@ -87,9 +117,20 @@ struct PDF
     double *dvec;      /* npair_ao */
     double *cvec;      /* q_local */
     double *jkbuf;     /* 2 * nbf * nbf: J then K */
-    double *slice;     /* nbf * nbf: one auxiliary function, densified */
-    double *half;      /* nbf * nocc_cap */
-    int nocc_cap;
+    /*
+     * Runs of consecutive primary shells, each covering a contiguous band of
+     * AO rows no wider than panel_rows. One band of one B_Q is what a thread
+     * densifies and half-transforms at a time.
+     */
+    int ngroups;
+    int *group_first;  /* ngroups + 1 shell indices */
+    int *group_row;    /* ngroups + 1 AO row starts, last one nbf */
+    int panel_rows;
+    /* nthreads * panel_rows * nbf. */
+    double *panels;
+    /* nbf * q_batch * nocc, sized on first use and grown as nocc grows. */
+    double *half;
+    size_t half_cap;
 };
 
 /* ---------------------------------------------------------------- setup -- */
@@ -101,6 +142,8 @@ static void pdf_free(PDF_t p)
     free(p->pair_n);
     free(p->pair_off);
     free(p->pair_first);
+    free(p->group_first);
+    free(p->group_row);
     free(p->ao_counts);
     free(p->ao_displs);
     free(p->q_counts);
@@ -109,7 +152,7 @@ static void pdf_free(PDF_t p)
     free(p->dvec);
     free(p->cvec);
     free(p->jkbuf);
-    free(p->slice);
+    free(p->panels);
     free(p->half);
     if (p->df != NULL) GTFDF_destroy(p->df);
     if (p->comm != MPI_COMM_NULL) MPI_Comm_free(&p->comm);
@@ -492,18 +535,30 @@ CIntStatus_t PDF_create(MPI_Comm comm, BasisSet_t primary, BasisSet_t auxiliary,
     p->nsh_p = GTFDF_nPriShells(p->df);
     p->nsh_a = GTFDF_nAuxShells(p->df);
     p->npair = p->nsh_p * (p->nsh_p + 1) / 2;
+    p->max_dim = 1;
+    for (int sh = 0; sh < p->nsh_p; sh++)
+    {
+        int d = GTFDF_priShellDim(p->df, sh);
+        if (d > p->max_dim) p->max_dim = d;
+    }
+    p->panel_rows = PDF_PANEL_ROWS;
+    if (p->panel_rows < p->max_dim) p->panel_rows = p->max_dim;
+    if (p->panel_rows > p->nbf) p->panel_rows = p->nbf;
 
     p->pair_m = (int *) malloc(sizeof(int) * (size_t) p->npair);
     p->pair_n = (int *) malloc(sizeof(int) * (size_t) p->npair);
     p->pair_off = (size_t *) malloc(sizeof(size_t) * ((size_t) p->npair + 1));
     p->pair_first = (int *) malloc(sizeof(int) * ((size_t) p->nranks + 1));
+    p->group_first = (int *) malloc(sizeof(int) * ((size_t) p->nsh_p + 1));
+    p->group_row = (int *) malloc(sizeof(int) * ((size_t) p->nsh_p + 1));
     p->ao_counts = (int *) malloc(sizeof(int) * (size_t) p->nranks);
     p->ao_displs = (int *) malloc(sizeof(int) * (size_t) p->nranks);
     p->q_counts = (int *) malloc(sizeof(int) * (size_t) p->nranks);
     p->q_displs = (int *) malloc(sizeof(int) * ((size_t) p->nranks + 1));
     if (p->pair_m == NULL || p->pair_n == NULL || p->pair_off == NULL
-        || p->pair_first == NULL || p->ao_counts == NULL || p->ao_displs == NULL
-        || p->q_counts == NULL || p->q_displs == NULL)
+        || p->pair_first == NULL || p->group_first == NULL
+        || p->group_row == NULL || p->ao_counts == NULL
+        || p->ao_displs == NULL || p->q_counts == NULL || p->q_displs == NULL)
     {
         pdf_free(p);
         return CINT_STATUS_ALLOC_FAILED;
@@ -524,6 +579,27 @@ CIntStatus_t PDF_create(MPI_Comm comm, BasisSet_t primary, BasisSet_t auxiliary,
     }
     p->pair_off[p->npair] = off;
     p->npair_ao = off;
+
+    /*
+     * Greedy runs of shells up to panel_rows AO rows each. Shells are ordered
+     * by AO index, so a run of them covers a contiguous band of rows.
+     */
+    p->ngroups = 0;
+    p->group_first[0] = 0;
+    p->group_row[0] = 0;
+    for (int sh = 0, rows = 0; sh < p->nsh_p; sh++)
+    {
+        int d = GTFDF_priShellDim(p->df, sh);
+        if (rows > 0 && rows + d > p->panel_rows)
+        {
+            p->group_first[p->ngroups + 1] = sh;
+            p->group_row[++p->ngroups] = GTFDF_priFuncStart(p->df, sh);
+            rows = 0;
+        }
+        rows += d;
+    }
+    p->group_first[p->ngroups + 1] = p->nsh_p;
+    p->group_row[++p->ngroups] = p->nbf;
 
     /*
      * The MPI strided types and the BLAS leading dimensions below both index
@@ -657,9 +733,10 @@ CIntStatus_t PDF_create(MPI_Comm comm, BasisSet_t primary, BasisSet_t auxiliary,
     p->dvec = (double *) malloc(sizeof(double) * p->npair_ao);
     p->cvec = (double *) malloc(sizeof(double) * (p->q_local > 0 ? p->q_local : 1));
     p->jkbuf = (double *) malloc(sizeof(double) * 2 * nbf2);
-    p->slice = (double *) malloc(sizeof(double) * nbf2);
+    p->panels = (double *) malloc(sizeof(double) * (size_t) p->nthreads
+                                  * p->panel_rows * p->nbf);
     if (p->dvec == NULL || p->cvec == NULL || p->jkbuf == NULL
-        || p->slice == NULL)
+        || p->panels == NULL)
     {
         pdf_free(p);
         return CINT_STATUS_ALLOC_FAILED;
@@ -677,28 +754,53 @@ CIntStatus_t PDF_destroy(PDF_t pdf)
 
 /* ------------------------------------------------------------ iteration -- */
 
-/* Scatter one auxiliary function's packed pair row into a dense nbf x nbf. */
-static void pdf_densify(PDF_t p, const double *row, double *dense)
+/*
+ * Write primary shell M's rows of one auxiliary function's B_Q into dst, dM
+ * dense rows of nbf doubles each, as one shell's contribution to a band.
+ *
+ * Only unique shell pairs are stored, so a band reads the (M,N) block straight
+ * for N <= M and the (N,M) block transposed for N > M. Every write runs along a
+ * band row, which is the whole point: the dense nbf x nbf scatter this replaced
+ * wrote in dM x dN patches strided by nbf, touching a cache line per few useful
+ * doubles, and measured an order of magnitude under this machine's streaming
+ * bandwidth. A band is a few hundred kilobytes and is read straight back by the
+ * GEMM, so the densified slice never reaches memory at all.
+ *
+ * The copies are written out element by element rather than handed to memcpy: a
+ * block row is a couple of doubles wide, so a call whose length is only known
+ * at run time costs more than the copy it performs, and there are one of them
+ * per (auxiliary function, shell pair, row).
+ *
+ * A diagonal block holds the full square and is symmetric, so the straight
+ * copy covers it; unlike the scatter, nothing writes an element twice.
+ */
+static void pdf_shell_rows(PDF_t p, const double *row, int M, double *dst)
 {
     const int nbf = p->nbf;
-#pragma omp parallel for schedule(dynamic) num_threads(p->nthreads)
-    for (int ip = 0; ip < p->npair; ip++)
+    const int dM = GTFDF_priShellDim(p->df, M);
+    const size_t rowM = (size_t) M * (M + 1) / 2;
+
+    for (int N = 0; N <= M; N++)
     {
-        int M = p->pair_m[ip];
-        int N = p->pair_n[ip];
-        int dM = GTFDF_priShellDim(p->df, M);
         int dN = GTFDF_priShellDim(p->df, N);
-        int sM = GTFDF_priFuncStart(p->df, M);
         int sN = GTFDF_priFuncStart(p->df, N);
-        const double *blk = &row[p->pair_off[ip]];
+        const double *blk = &row[p->pair_off[rowM + N]];
         for (int m = 0; m < dM; m++)
         {
-            for (int n = 0; n < dN; n++)
-            {
-                double v = blk[m * dN + n];
-                dense[(size_t) (sM + m) * nbf + (sN + n)] = v;
-                dense[(size_t) (sN + n) * nbf + (sM + m)] = v;
-            }
+            double *out = &dst[(size_t) m * nbf + sN];
+            const double *src = &blk[m * dN];
+            for (int n = 0; n < dN; n++) out[n] = src[n];
+        }
+    }
+    for (int N = M + 1; N < p->nsh_p; N++)
+    {
+        int dN = GTFDF_priShellDim(p->df, N);
+        int sN = GTFDF_priFuncStart(p->df, N);
+        const double *blk = &row[p->pair_off[(size_t) N * (N + 1) / 2 + M]];
+        for (int m = 0; m < dM; m++)
+        {
+            double *out = &dst[(size_t) m * nbf + sN];
+            for (int n = 0; n < dN; n++) out[n] = blk[n * dM + m];
         }
     }
 }
@@ -717,16 +819,27 @@ CIntStatus_t PDF_computeJK(PDF_t pdf, const double *D, const double *Cocc,
     double *Kloc = pdf->jkbuf + nbf2;
 
     /*
-     * Grow the half-transform scratch before any compute: bailing out from
-     * inside the loops below would strand the other ranks in the Allreduce.
+     * Size the batch and grow the half-transform scratch before any compute:
+     * bailing out from inside the loops below would strand the other ranks in
+     * the Allreduce.
      */
     int failed = 0;
-    if (K != NULL && nocc > 0 && nocc > pdf->nocc_cap)
+    int q_batch = 1;
+    if (K != NULL && nocc > 0 && pdf->q_local > 0)
     {
-        free(pdf->half);
-        pdf->half = (double *) malloc(sizeof(double) * (size_t) nbf * nocc);
-        pdf->nocc_cap = (pdf->half != NULL) ? nocc : 0;
-        failed = (pdf->half == NULL);
+        size_t per_q = (size_t) nbf * nocc;
+        size_t budget = PDF_K_BATCH_BYTES / (sizeof(double) * per_q);
+        q_batch = (budget > PDF_K_MAX_BATCH) ? PDF_K_MAX_BATCH : (int) budget;
+        if (q_batch < 1) q_batch = 1;
+        if (q_batch > pdf->q_local) q_batch = pdf->q_local;
+        size_t need = per_q * (size_t) q_batch;
+        if (need > pdf->half_cap)
+        {
+            free(pdf->half);
+            pdf->half = (double *) malloc(sizeof(double) * need);
+            pdf->half_cap = (pdf->half != NULL) ? need : 0;
+            failed = (pdf->half == NULL);
+        }
     }
 
     memset(pdf->jkbuf, 0, sizeof(double) * 2 * nbf2);
@@ -794,20 +907,61 @@ CIntStatus_t PDF_computeJK(PDF_t pdf, const double *D, const double *Cocc,
     if (K != NULL && nocc > 0 && pdf->q_local > 0 && !failed)
     {
         /*
-         * One auxiliary function at a time: densify B_Q, half-transform it
-         * with the occupied coefficients, and accumulate the outer product.
-         * Batching several Q into one GEMM would amortise the call overhead;
-         * at SCF-relevant sizes each of these is already a large GEMM.
+         * Half-transform straight off the packed blocks. One (auxiliary
+         * function, shell group) pair gathers that group's band of B_Q rows
+         * into a cache-resident panel and multiplies it by the occupied
+         * coefficients; the result lands in its own corner of the batch
+         * buffer, so no two iterations of the loop write the same output and
+         * the buffer needs no zeroing.
+         *
+         * The dgemm runs inside the parallel region. OpenMP nesting is off by
+         * default, so a threaded BLAS serialises there, which is what we
+         * want: the loop over auxiliary functions and bands already has every
+         * thread busy, and running the GEMM there is what keeps each band on
+         * the core that built it, in that core's own cache.
+         *
+         * A whole batch then shares one dsyrk. That is the same K += H H^T as
+         * one auxiliary function at a time, but it passes over the nbf x nbf
+         * accumulator once per batch rather than once per Q.
          */
+        const int ngroups = pdf->ngroups;
         double one = 1.0, zero = 0.0;
-        for (int q = 0; q < pdf->q_local; q++)
+        for (int qb = 0; qb < pdf->q_local; qb += q_batch)
         {
-            pdf_densify(pdf, &pdf->B[(size_t) q * npair_ao], pdf->slice);
-            /* half = slice * Cocc, row-major, via the Fortran transpose view. */
-            dgemm_("N", "N", &nocc, &nbf, &nbf, &one, Cocc, &nocc, pdf->slice,
-                   &nbf, &zero, pdf->half, &nocc);
+            int nq = pdf->q_local - qb;
+            if (nq > q_batch) nq = q_batch;
+            const int ldh = nq * nocc;
+#pragma omp parallel num_threads(pdf->nthreads)
+            {
+                double *panel = &pdf->panels[(size_t) omp_get_thread_num()
+                                             * pdf->panel_rows * nbf];
+#pragma omp for collapse(2) schedule(dynamic)
+                for (int qi = 0; qi < nq; qi++)
+                {
+                    for (int g = 0; g < ngroups; g++)
+                    {
+                        const double *row =
+                            &pdf->B[(size_t) (qb + qi) * npair_ao];
+                        int gs = pdf->group_row[g];
+                        int gr = pdf->group_row[g + 1] - gs;
+                        for (int M = pdf->group_first[g];
+                             M < pdf->group_first[g + 1]; M++)
+                        {
+                            int sM = GTFDF_priFuncStart(pdf->df, M);
+                            pdf_shell_rows(pdf, row, M,
+                                           &panel[(size_t) (sM - gs) * nbf]);
+                        }
+                        /* half rows gs.. of this Q = panel * Cocc, row-major,
+                         * via the Fortran transpose view. */
+                        dgemm_("N", "N", &nocc, &gr, &nbf, &one, Cocc, &nocc,
+                               panel, &nbf, &zero,
+                               &pdf->half[(size_t) gs * ldh + qi * nocc],
+                               &ldh);
+                    }
+                }
+            }
             /* K += half half^T, accumulating the Fortran upper triangle. */
-            dsyrk_("U", "T", &nbf, &nocc, &one, pdf->half, &nocc, &one, Kloc,
+            dsyrk_("U", "T", &nbf, &ldh, &one, pdf->half, &ldh, &one, Kloc,
                    &nbf);
         }
     }

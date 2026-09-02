@@ -63,11 +63,53 @@ the send displacement. The phased `MPI_Sendrecv` loop sends the same number of
 messages, needs no packing buffer - the receive side uses an `MPI_Type_vector`
 to land each peer's columns directly in place - and has no such ceiling.
 
-Two smaller MVP shortcuts, both local and both replaceable without touching the
-interface: `K` densifies one auxiliary function at a time into an `nbf^2`
-buffer instead of batching several `Q` into one GEMM, and the shell-pair
-partition is a static balance on AO-element count rather than on measured
-integral cost.
+## Banding the exchange half-transform
+
+`K` is where the per-iteration time goes, and for a while it went somewhere
+avoidable. The half-transform needs `B_Q` as a dense `nbf x nbf` matrix, but
+only unique shell pairs are stored, so the first implementation scattered one
+auxiliary function's packed pair row into an `nbf^2` buffer and then multiplied
+that buffer by the occupied coefficients. The scatter writes a `dM x dN` patch
+per shell pair, strided by `nbf`, which touches a cache line per few useful
+doubles: measured at 7.2 GB/s against a machine that streams several times
+that, and 71% of the local J/K clock on a 574-function nanotube.
+
+It is now banded. A thread takes one auxiliary function and one run of
+consecutive primary shells, gathers just that band of rows - straight for
+`N <= M`, transposed for `N > M`, always writing along a band row - and hands
+the band to one GEMM against the occupied coefficients. The band is a few
+hundred kilobytes, so the GEMM reads it back out of cache and the densified
+matrix never reaches memory at all. Several auxiliary functions then share one
+`dsyrk`, which is the same `K += H H^T` but passes over the `nbf x nbf`
+accumulator once per batch instead of once per `Q`.
+
+The band width is the one tuning parameter and both ends of it cost. One shell
+per band leaves a GEMM two or three columns wide, too narrow to pay for its own
+setup; a band that no longer fits in L2 alongside the coefficients puts the
+densified rows back out to memory and gives up the point of banding. On a
+24-core socket the cost is flat from about 16 to 48 rows and rises on either
+side, so `PDF_PANEL_ROWS` sits at 32. Unlike the `nbf^2` buffer it replaced,
+the scratch does not grow with the system.
+
+Measured single-rank on one host, 24 threads, `6-31+G**`, against the scatter it
+replaced:
+
+| system | `nbf` | J/K before | after | speedup |
+|---|---|---|---|---|
+| peptide | 260 | 3.14 s | 1.47 s | 2.14x |
+| nanotube | 574 | 27.50 s | 16.00 s | 1.72x |
+
+What is left of the local clock is close to irreducible. Splitting one nanotube
+build by matrix gives `J` 0.41 s and `K` 0.95 s. `J` is two `dgemv` over the
+whole 4 GB local tensor and is flat from 6 to 24 threads, so it is already at
+this machine's memory ceiling and no amount of restructuring will move it; the
+two passes are inherent, since every `Q` of `c_Q` is needed before any element
+of `J`. Of `K`, about 0.28 s is the gather - down from 1.18 s - and the rest is
+the two BLAS calls running at roughly a quarter of peak.
+
+One MVP shortcut remains, local and replaceable without touching the interface:
+the shell-pair partition is a static balance on AO-element count rather than on
+measured integral cost.
 
 ## Factoring the metric
 
