@@ -35,9 +35,13 @@ extern void dsyrk_(const char *uplo, const char *trans, const int *n,
                    const int *k, const double *alpha, const double *a,
                    const int *lda, const double *beta, double *c,
                    const int *ldc);
-extern void dsyev_(const char *jobz, const char *uplo, const int *n, double *a,
-                   const int *lda, double *w, double *work, const int *lwork,
-                   int *info);
+extern void dtrsm_(const char *side, const char *uplo, const char *transa,
+                   const char *diag, const int *m, const int *n,
+                   const double *alpha, const double *a, const int *lda,
+                   double *b, const int *ldb);
+extern void dpstrf_(const char *uplo, const int *n, double *a, const int *lda,
+                    int *piv, int *rank, const double *tol, double *work,
+                    int *info);
 
 #define PDF_DEFAULT_COND 1e-12
 
@@ -48,7 +52,11 @@ struct PDF
 
     GTFDF_t df;
     int nbf, naux, nsh_p, nsh_a;
-    int nnull;
+    /* Rows the metric factorization retained, and the ones it dropped. */
+    int nfit, nnull;
+
+    /* Wall seconds per PDF_create phase; zeroed by the calloc in PDF_create. */
+    double phase_s[PDF_NPHASES];
 
     /* Unique primary shell pairs (M >= N), ordered by M then N. */
     int npair;
@@ -63,7 +71,7 @@ struct PDF
     int *ao_displs;    /* nranks */
     int ao_local;
 
-    /* Post-Phase-C ownership: a contiguous run of auxiliary functions. */
+    /* Post-Phase-C ownership: a contiguous run of fitted tensor rows. */
     int *q_counts;     /* nranks */
     int *q_displs;     /* nranks + 1 */
     int q_local;
@@ -131,10 +139,14 @@ static void pdf_partition_pairs(PDF_t p)
     p->ao_local = p->ao_counts[p->rank];
 }
 
+/*
+ * Split the fitted axis. Called after the metric factorization, because the
+ * rows that survive it are what actually get distributed.
+ */
 static void pdf_partition_aux(PDF_t p)
 {
-    int base = p->naux / p->nranks;
-    int rem  = p->naux % p->nranks;
+    int base = p->nfit / p->nranks;
+    int rem  = p->nfit % p->nranks;
     p->q_displs[0] = 0;
     for (int r = 0; r < p->nranks; r++)
     {
@@ -147,7 +159,7 @@ static void pdf_partition_aux(PDF_t p)
 /*
  * Replicated Coulomb metric (P|Q). Auxiliary shell pairs are dealt out
  * round-robin and the result is reduced, so every rank leaves with the same
- * bits and the eigendecomposition below needs no further agreement.
+ * bits and the factorization below needs no further agreement.
  */
 static CIntStatus_t pdf_build_metric(PDF_t p, double *metric)
 {
@@ -206,81 +218,134 @@ static CIntStatus_t pdf_build_metric(PDF_t p, double *metric)
 }
 
 /*
- * metric -> J^-1/2, in a freshly allocated buffer. The decomposition is
- * replicated: at naux = 7000 that is a 392 MB matrix and an O(naux^3) solve on
- * every rank, which docs/distributed-df.md flags as the first thing ScaLAPACK
- * should take over.
+ * Factor the Coulomb metric in place: P^T J P = L L^T, pivoted and truncated.
+ *
+ * The first version of this formed J^-1/2 with a symmetric eigendecomposition.
+ * Nothing downstream needs the inverse square root itself. Both J and K see the
+ * fitted tensor only through B^T B = A^T J^-1 A, so any factor of J^-1 gives
+ * the same matrices, and a Cholesky costs n^3/3 flops against dsyev's ~9 n^3
+ * plus a dsyrk. It also runs in place, where the eigen path held the
+ * eigenvectors and the assembled J^-1/2 at once, and it turns Phase B from a
+ * full GEMM into a triangular solve of half the flops that can overwrite its
+ * input. This matters more than the flop count suggests: the factorization is
+ * replicated bit-for-bit on every rank, so it is the one part of setup that
+ * gets no faster as ranks are added, and at a fixed core count it gets slower.
+ *
+ * Truncation is a different criterion from the eigenvalue floor it replaces,
+ * and `cond` accordingly means something different. dpstrf pivots the largest
+ * remaining diagonal of the Schur complement to the front and stops once that
+ * falls below `cond` times the first; the retained leading block is then
+ * factored exactly, so the result is an exact fit in a pivot-selected subset of
+ * the auxiliary basis rather than a pseudo-inverse over all of it. The eigen
+ * path instead dropped every eigenvector below `cond` times the largest
+ * eigenvalue, which is also what Psi4's DFHelper does with
+ * DF_FITTING_CONDITION.
+ *
+ * The two criteria select the same functions on a metric that is clearly
+ * well conditioned or clearly rank-deficient, and disagree when its spectrum
+ * straddles the cutoff -- where they disagree, this one keeps more. Water in
+ * cc-pVDZ/cc-pVDZ-JKFIT at Psi4's default 1e-10 is exactly that case: the
+ * smallest eigenvalue is 3.83e-08 against a floor of 4.17e-08, so DFHelper
+ * discards one vector and dpstrf keeps all 131. Measured against the
+ * untruncated fit A^T J^-1 A, the resulting Coulomb metric contraction is off
+ * by 8.0e-07 for the eigen path and 1.6e-14 for this one, and J differs
+ * between the two engines by 3.4e-07. Below 1e-12, where neither truncates,
+ * they agree to 6.9e-12. tests/pytests/test_gtfock.py pins the condition for
+ * its tight MemDFJK comparisons for that reason and tests the truncation
+ * difference separately. PDF_nMetricNullVectors reports what was dropped.
+ *
+ * On return the leading nfit x nfit Fortran lower triangle of `metric` is L,
+ * and `*piv_out` is LAPACK's one-based permutation: factor row k carries
+ * auxiliary function piv[k] - 1.
  */
-static CIntStatus_t pdf_invsqrt_metric(PDF_t p, double *metric, double cond,
-                                       double **jm12_out)
+static CIntStatus_t pdf_factor_metric(PDF_t p, double *metric, double cond,
+                                      int **piv_out)
 {
     const int n = p->naux;
-    double *w = (double *) malloc(sizeof(double) * n);
-    double *jm12 = (double *) malloc(sizeof(double) * (size_t) n * n);
-    if (w == NULL || jm12 == NULL)
+    int *piv = (int *) malloc(sizeof(int) * (size_t) (n > 0 ? n : 1));
+    double *work =
+        (double *) malloc(sizeof(double) * 2 * (size_t) (n > 0 ? n : 1));
+    if (piv == NULL || work == NULL)
     {
-        free(w);
-        free(jm12);
+        free(piv);
+        free(work);
         return CINT_STATUS_ALLOC_FAILED;
-    }
-
-    int info = 0, lwork = -1;
-    double query = 0.0;
-    dsyev_("V", "U", &n, metric, &n, w, &query, &lwork, &info);
-    if (info != 0)
-    {
-        free(w);
-        free(jm12);
-        return CINT_STATUS_EXECUTION_FAILED;
-    }
-    lwork = (int) query;
-    double *work = (double *) malloc(sizeof(double) * (size_t) lwork);
-    if (work == NULL)
-    {
-        free(w);
-        free(jm12);
-        return CINT_STATUS_ALLOC_FAILED;
-    }
-    dsyev_("V", "U", &n, metric, &n, w, work, &lwork, &info);
-    free(work);
-    if (info != 0)
-    {
-        free(w);
-        free(jm12);
-        return CINT_STATUS_EXECUTION_FAILED;
     }
 
     /*
-     * dsyev returns eigenvectors as columns in Fortran order, so in this
-     * row-major buffer eigenvector k is row k. Scaling that row by
-     * w[k]^-1/4 turns the outer product below into V diag(w^-1/2) V^T.
+     * dpstrf's own default is n * eps * max(diag). Passing an explicit multiple
+     * of the largest diagonal keeps `fitting_cond` meaning the same relative
+     * thing it meant as an eigenvalue floor, and keeps the cutoff independent
+     * of the auxiliary basis size.
      */
-    double wmax = w[n - 1] > 0.0 ? w[n - 1] : 0.0;
-    double floor_ = cond * wmax;
-    int nnull = 0;
+    double dmax = 0.0;
     for (int k = 0; k < n; k++)
+        if (metric[(size_t) k * n + k] > dmax) dmax = metric[(size_t) k * n + k];
+    double tol = cond * dmax;
+
+    int rank = 0, info = 0;
+    dpstrf_("L", &n, metric, &n, piv, &rank, &tol, work, &info);
+    free(work);
+    /* info > 0 only says the tolerance stopped the factorization early, which
+     * is the rank-deficient case this is written for; `rank` is then the
+     * retained order. info < 0 is a bad argument. */
+    if (info < 0 || rank <= 0 || rank > n)
     {
-        double scale = 0.0;
-        if (w[k] > floor_ && w[k] > 0.0) scale = 1.0 / sqrt(sqrt(w[k]));
-        else nnull++;
-        double *row = &metric[(size_t) k * n];
-        for (int i = 0; i < n; i++) row[i] *= scale;
+        free(piv);
+        return CINT_STATUS_EXECUTION_FAILED;
     }
-    p->nnull = nnull;
-    free(w);
 
-    /*
-     * Read row-major metric[k][i] as the Fortran matrix A(i,k); then
-     * A A^T = sum_k V_k V_k^T / sqrt(w_k), which is what we want.
-     */
-    double one = 1.0, zero = 0.0;
-    dsyrk_("U", "N", &n, &n, &one, metric, &n, &zero, jm12, &n);
-    /* dsyrk filled the Fortran upper triangle; mirror to a full matrix. */
-    for (int j = 0; j < n; j++)
-        for (int i = 0; i < j; i++)
-            jm12[(size_t) j + (size_t) i * n] = jm12[(size_t) i + (size_t) j * n];
+    p->nfit = rank;
+    p->nnull = n - rank;
+    *piv_out = piv;
+    return CINT_STATUS_SUCCESS;
+}
 
-    *jm12_out = jm12;
+/*
+ * Reorder the auxiliary axis of this rank's three-center block into pivot
+ * order, in place. An auxiliary function's whole row is contiguous here, so
+ * following the permutation's cycles turns this into a sequence of full-row
+ * memcpys; LAPACK's dlapmt would do the same permutation an element at a time.
+ */
+static CIntStatus_t pdf_permute_aux_rows(PDF_t p, double *A3, const int *piv)
+{
+    const size_t m = (size_t) p->ao_local;
+    const int n = p->naux;
+    if (m == 0 || A3 == NULL) return CINT_STATUS_SUCCESS;
+
+    char *seen = (char *) calloc((size_t) n, 1);
+    double *tmp = (double *) malloc(sizeof(double) * m);
+    if (seen == NULL || tmp == NULL)
+    {
+        free(seen);
+        free(tmp);
+        return CINT_STATUS_ALLOC_FAILED;
+    }
+
+    for (int s0 = 0; s0 < n; s0++)
+    {
+        if (seen[s0]) continue;
+        seen[s0] = 1;
+        if (piv[s0] - 1 == s0) continue;
+        /* Lift the cycle's first row out, then pull each successor into the
+         * hole it leaves behind. */
+        memcpy(tmp, &A3[(size_t) s0 * m], sizeof(double) * m);
+        int j = s0;
+        for (;;)
+        {
+            int k = piv[j] - 1;
+            if (k == s0)
+            {
+                memcpy(&A3[(size_t) j * m], tmp, sizeof(double) * m);
+                break;
+            }
+            memcpy(&A3[(size_t) j * m], &A3[(size_t) k * m], sizeof(double) * m);
+            seen[k] = 1;
+            j = k;
+        }
+    }
+    free(seen);
+    free(tmp);
     return CINT_STATUS_SUCCESS;
 }
 
@@ -338,21 +403,23 @@ static CIntStatus_t pdf_build_3c(PDF_t p, double *A3)
 }
 
 /*
- * Phase C: go from "all Q, my mn" to "my Q, all mn".
+ * Phase C: go from "all Q, my mn" to "my Q, all mn". `fit` is the rank's
+ * fitted block, still keyed by every Q; at one rank PDF_create skips this
+ * entirely and adopts that buffer instead of copying it.
  *
  * MPI_Alltoallw would express this in one call but its displacements are byte
  * counts in int, which overflow well below the 24 GB/rank this is sized for.
  * Phased pairwise Sendrecv with a strided receive type has the same message
  * count, needs no third copy, and has no such ceiling.
  */
-static CIntStatus_t pdf_redistribute(PDF_t p, const double *Bfull)
+static CIntStatus_t pdf_redistribute(PDF_t p, const double *fit)
 {
     const int npair_ao = (int) p->npair_ao;
     const int ao_local = p->ao_local;
 
     for (int q = 0; q < p->q_local; q++)
         memcpy(&p->B[(size_t) q * npair_ao + p->ao_displs[p->rank]],
-               &Bfull[(size_t) (p->q_displs[p->rank] + q) * ao_local],
+               &fit[(size_t) (p->q_displs[p->rank] + q) * ao_local],
                sizeof(double) * (size_t) ao_local);
 
     MPI_Datatype rowtype;
@@ -367,7 +434,7 @@ static CIntStatus_t pdf_redistribute(PDF_t p, const double *Bfull)
         /* p->B is always allocated, so it stands in as a valid zero-count
          * address rather than passing MPI a null pointer. */
         const double *sbuf = (ao_local > 0)
-            ? &Bfull[(size_t) p->q_displs[dst] * ao_local] : p->B;
+            ? &fit[(size_t) p->q_displs[dst] * ao_local] : p->B;
 
         MPI_Datatype blocktype;
         MPI_Type_vector(p->q_local, p->ao_counts[src], npair_ao, MPI_DOUBLE,
@@ -468,7 +535,6 @@ CIntStatus_t PDF_create(MPI_Comm comm, BasisSet_t primary, BasisSet_t auxiliary,
     }
 
     pdf_partition_pairs(p);
-    pdf_partition_aux(p);
 
     double cond = fitting_cond > 0.0 ? fitting_cond : PDF_DEFAULT_COND;
     double *metric =
@@ -478,61 +544,105 @@ CIntStatus_t PDF_create(MPI_Comm comm, BasisSet_t primary, BasisSet_t auxiliary,
         pdf_free(p);
         return CINT_STATUS_ALLOC_FAILED;
     }
+    double t0 = MPI_Wtime();
     status = pdf_build_metric(p, metric);
-    double *jm12 = NULL;
+    p->phase_s[PDF_PHASE_METRIC] = MPI_Wtime() - t0;
+
+    int *piv = NULL;
     if (status == CINT_STATUS_SUCCESS)
-        status = pdf_invsqrt_metric(p, metric, cond, &jm12);
-    free(metric);
+    {
+        t0 = MPI_Wtime();
+        status = pdf_factor_metric(p, metric, cond, &piv);
+        p->phase_s[PDF_PHASE_FACTOR] = MPI_Wtime() - t0;
+    }
     if (status != CINT_STATUS_SUCCESS)
     {
-        free(jm12);
+        free(metric);
+        free(piv);
         pdf_free(p);
         return status;
     }
+    /* Only the retained rows are distributed, so this waits on the factor. */
+    pdf_partition_aux(p);
 
+    /*
+     * Phases A and B share one buffer. The three-center block is built over
+     * every auxiliary function, then reordered and solved against in place, so
+     * the fitted rows overwrite their own input and setup never holds two
+     * copies of the tensor at once.
+     */
     size_t local_tensor = (size_t) p->naux * p->ao_local;
-    double *A3 = NULL, *Bfull = NULL;
+    double *A3 = NULL;
     if (local_tensor > 0)
     {
         A3 = (double *) malloc(sizeof(double) * local_tensor);
-        Bfull = (double *) malloc(sizeof(double) * local_tensor);
-        if (A3 == NULL || Bfull == NULL)
+        if (A3 == NULL)
         {
-            free(A3);
-            free(Bfull);
-            free(jm12);
+            free(metric);
+            free(piv);
             pdf_free(p);
             return CINT_STATUS_ALLOC_FAILED;
         }
     }
 
+    t0 = MPI_Wtime();
     status = pdf_build_3c(p, A3);
+    p->phase_s[PDF_PHASE_INT3C] = MPI_Wtime() - t0;
+
+    t0 = MPI_Wtime();
+    if (status == CINT_STATUS_SUCCESS)
+        status = pdf_permute_aux_rows(p, A3, piv);
     if (status == CINT_STATUS_SUCCESS && local_tensor > 0)
     {
-        /* Phase B: Bfull = J^-1/2 A3, read column-major as Bfull^T = A3^T J^-1/2. */
-        double one = 1.0, zero = 0.0;
-        dgemm_("N", "N", &p->ao_local, &p->naux, &p->naux, &one, A3,
-               &p->ao_local, jm12, &p->naux, &zero, Bfull, &p->ao_local);
+        /*
+         * Phase B: solve B L^T = P^T A3 from the right, which in this
+         * row-major buffer is X = (P^T A3)^T L^-T = B^T. Rows nfit and beyond
+         * are left as the integrals put them and are never read again.
+         */
+        double one = 1.0;
+        dtrsm_("R", "L", "T", "N", &p->ao_local, &p->nfit, &one, metric,
+               &p->naux, A3, &p->ao_local);
     }
-    free(A3);
-    free(jm12);
+    p->phase_s[PDF_PHASE_FIT] = MPI_Wtime() - t0;
+    free(metric);
+    free(piv);
     if (status != CINT_STATUS_SUCCESS)
     {
-        free(Bfull);
+        free(A3);
         pdf_free(p);
         return status;
     }
 
-    size_t bsize = (size_t) p->q_local * p->npair_ao;
-    p->B = (double *) malloc(sizeof(double) * (bsize > 0 ? bsize : 1));
-    if (p->B == NULL)
+    t0 = MPI_Wtime();
+    if (p->nranks == 1 && A3 != NULL)
     {
-        free(Bfull);
-        pdf_free(p);
-        return CINT_STATUS_ALLOC_FAILED;
+        /*
+         * At one rank the fitted block already is this rank's slice: q_local is
+         * nfit and npair_ao is ao_local, so the two layouts coincide. Adopt the
+         * buffer rather than copying it, and hand the unused tail back. A
+         * failed shrink is not an error; the oversized block is still correct.
+         */
+        size_t bsize = (size_t) p->nfit * p->ao_local;
+        p->B = A3;
+        A3 = NULL;
+        double *shrunk =
+            (double *) realloc(p->B, sizeof(double) * (bsize > 0 ? bsize : 1));
+        if (shrunk != NULL) p->B = shrunk;
     }
-    status = pdf_redistribute(p, Bfull);
-    free(Bfull);
+    else
+    {
+        size_t bsize = (size_t) p->q_local * p->npair_ao;
+        p->B = (double *) malloc(sizeof(double) * (bsize > 0 ? bsize : 1));
+        if (p->B == NULL)
+        {
+            free(A3);
+            pdf_free(p);
+            return CINT_STATUS_ALLOC_FAILED;
+        }
+        status = pdf_redistribute(p, A3);
+        free(A3);
+    }
+    p->phase_s[PDF_PHASE_REDIST] = MPI_Wtime() - t0;
     if (status != CINT_STATUS_SUCCESS)
     {
         pdf_free(p);
@@ -715,6 +825,7 @@ CIntStatus_t PDF_computeJK(PDF_t pdf, const double *D, const double *Cocc,
 
 int PDF_nBasisFuncs(PDF_t pdf) { return pdf->nbf; }
 int PDF_nAuxFuncs(PDF_t pdf) { return pdf->naux; }
+int PDF_nFitFuncs(PDF_t pdf) { return pdf->nfit; }
 int PDF_nLocalAuxFuncs(PDF_t pdf) { return pdf->q_local; }
 int PDF_nMetricNullVectors(PDF_t pdf) { return pdf->nnull; }
 size_t PDF_localTensorSize(PDF_t pdf)
@@ -722,3 +833,22 @@ size_t PDF_localTensorSize(PDF_t pdf)
     return (size_t) pdf->q_local * pdf->npair_ao;
 }
 int PDF_nLocalPairElements(PDF_t pdf) { return pdf->ao_local; }
+
+double PDF_phaseSeconds(PDF_t pdf, PDF_Phase phase)
+{
+    if (pdf == NULL || phase < 0 || phase >= PDF_NPHASES) return 0.0;
+    return pdf->phase_s[phase];
+}
+
+const char *PDF_phaseName(PDF_Phase phase)
+{
+    switch (phase)
+    {
+        case PDF_PHASE_METRIC: return "metric";
+        case PDF_PHASE_FACTOR: return "factor";
+        case PDF_PHASE_INT3C:  return "int3c";
+        case PDF_PHASE_FIT:    return "fit";
+        case PDF_PHASE_REDIST: return "redist";
+        default:               return NULL;
+    }
+}

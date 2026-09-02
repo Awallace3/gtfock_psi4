@@ -24,9 +24,14 @@ is invisible to the `JK: JK` timer (see Psi4's `doc/sphinxman/source/gtfock.rst`
 
 With `A[P][mn] = (P|mn)` and metric `J[PQ] = (P|Q)`,
 
-    B[Q][mn] = sum_P [J^-1/2][PQ] A[P][mn]
+    B[Q][mn] = sum_P X[QP] A[P][mn],  where X^T X = J^-1
     J[mn]    = sum_Q B[Q][mn] c[Q],   c[Q] = sum_rs B[Q][rs] D[rs]
     K[mn]    = sum_Q sum_i B[Q][mi] B[Q][ni],  B[Q][mi] = sum_n B[Q][mn] C[ni]
+
+Both matrices see the fitted tensor only through `B^T B = A^T J^-1 A`, so `X` is
+pinned only up to a left orthogonal factor: any square root, Cholesky factor or
+pivoted Cholesky factor of `J^-1` gives the same `J` and `K`. "Factoring the
+metric" below spends that freedom.
 
 Coulomb is content with any distribution: `c` is a length-`naux` reduction and
 `J` is a local scaling. Exchange is not. `K` contracts two `B` blocks that share
@@ -41,9 +46,9 @@ bulk redistribution is paid once, at setup.
 - **A. Integrals (no communication).** Rank `r` owns a contiguous block of
   primary shell pairs `mn` and computes `A[P][mn]` for *all* `P` over that
   block. Perfectly parallel; this is the expensive phase.
-- **B. Fit (local GEMM).** The metric power `J^-1/2` is replicated
-  (`naux^2 * 8 B ~= 392 MB` at `naux = 7000`, affordable), so `B[all Q][local mn]`
-  is one local `dgemm`.
+- **B. Fit (local triangular solve).** The metric factor is replicated
+  (`naux^2 * 8 B ~= 392 MB` at `naux = 7000`, affordable), so
+  `B[all Q][local mn]` is one local `dtrsm` that overwrites `A` in place.
 - **C. Redistribute (phased pairwise `MPI_Sendrecv`).** Transpose the ownership
   from `all Q / local mn` to `local Q / all mn`. Moves the whole tensor exactly
   once for the lifetime of the SCF.
@@ -58,18 +63,71 @@ the send displacement. The phased `MPI_Sendrecv` loop sends the same number of
 messages, needs no packing buffer - the receive side uses an `MPI_Type_vector`
 to land each peer's columns directly in place - and has no such ceiling.
 
-The MVP forms `J^-1/2` with a replicated symmetric eigendecomposition, so every
-rank spends `O(naux^3)` on identical data and holds `naux^2` doubles twice
-during setup. MKL ScaLAPACK is already linked through the `gtf_numeric`
-interface target and is the documented upgrade when `naux^2` stops fitting
-comfortably. Peak memory during setup is otherwise twice the steady-state
-tensor: phase B needs `A` and `B` simultaneously, and so does phase C.
-
 Two smaller MVP shortcuts, both local and both replaceable without touching the
 interface: `K` densifies one auxiliary function at a time into an `nbf^2`
 buffer instead of batching several `Q` into one GEMM, and the shell-pair
 partition is a static balance on AO-element count rather than on measured
 integral cost.
+
+## Factoring the metric
+
+The factorization is the one part of setup that gets no faster as ranks are
+added: every rank runs it bit-for-bit on the same `naux x naux` data, and since
+each rank is bound to `ncores / nranks` cores, at a fixed core count it gets
+*slower*. Reducing it therefore means reducing its flops, not distributing them,
+until `naux^2` stops fitting comfortably - at which point MKL ScaLAPACK is
+already linked through the `gtf_numeric` interface target and is the documented
+upgrade.
+
+The first version formed `J^-1/2` with a symmetric eigendecomposition: `dsyev`
+at `~9 naux^3` plus a `dsyrk` at `naux^3` to reassemble, holding the
+eigenvectors and the assembled `J^-1/2` at the same time. Nothing downstream
+needs the inverse square root, per the identity above. `PDF_create` now takes a
+pivoted Cholesky of the metric instead - `dpstrf`, `naux^3 / 3` flops, in place
+- and phase B falls out of it as a triangular solve at half the GEMM's flops,
+also in place.
+
+Truncation changes meaning with the factorization, and that is a real
+behavioural difference rather than a reformulation. `dpstrf` pivots the largest
+remaining Schur-complement diagonal to the front and stops once it falls below
+`fitting_cond` times the first, so the retained leading block is factored
+exactly and the result is an exact fit in a pivot-selected subset of the
+auxiliary basis. The eigen path, like Psi4's `DFHelper` under
+`DF_FITTING_CONDITION`, instead dropped every eigenvector below `fitting_cond`
+times the largest eigenvalue: a pseudo-inverse over the whole basis. The two
+criteria select the same functions on a metric that is clearly well conditioned
+or clearly rank-deficient, and disagree when its spectrum straddles the cutoff,
+where the pivot criterion keeps more.
+
+Water in `cc-pVDZ`/`cc-pVDZ-JKFIT` at Psi4's 1e-10 default is exactly that case.
+The smallest eigenvalue is `3.83e-08` against an eigenvalue floor of `4.17e-08`
+and a pivot cutoff of `4.42e-09`, so `DFHelper` discards one function and this
+engine keeps all 131. Measured against the untruncated fit `A^T J^-1 A`, the
+eigen path is `8.0e-07` off and the Cholesky `1.6e-14`, and `J` differs between
+the two engines by `3.4e-07`. Psi4's `tests/pytests/test_gtfock.py` pins the
+condition to 1e-12 for its tight `MemDFJK` comparisons for that reason and
+covers the difference itself in a separate test. `PDF_nFitFuncs` and
+`PDF_nMetricNullVectors` report what survived.
+
+## Setup memory
+
+Steady state is one tensor slice per rank, `naux * npair_ao / nranks` doubles.
+Setup peaks above it because phase C cannot release the phase-A buffer until the
+last `MPI_Sendrecv` has completed, so a multi-rank run holds two slices at once
+- roughly `2x` steady state, plus the replicated `naux^2` metric.
+
+Two of the three excess copies are gone. The in-place `dtrsm` removed the
+separate destination buffer phase B used to need, along with the assembled
+`J^-1/2` that sat beside the eigenvectors. At one rank there is no
+redistribution at all, so the integral buffer is adopted as the tensor and
+shrunk with `realloc`, and setup peaks at one slice plus the metric. Bringing
+the multi-rank peak to the same place requires phases A/B/C blocked over column
+strips of `mn`, which is a larger change and has not been made.
+
+`PDF_phaseSeconds` reports this rank's wall seconds in each of the five phases
+(`metric`, `factor`, `int3c`, `fit`, `redist`), so where setup goes is measured
+rather than modelled. Each rank times its own elapsed seconds including any wait
+inside a collective, so the spread across ranks is the load imbalance.
 
 ## Integral layer
 
@@ -121,7 +179,8 @@ immutable. Both files ship in `GTFock::GTFockDF`:
 Because `gtfock_pdf.h` names `MPI_Comm`, `MPI::MPI_C` is a public dependency of
 the exported target; OpenMP and BLAS/LAPACK stay private. BLAS and LAPACK are
 called through the LP64 Fortran symbols (`dgemm_`, `dgemv_`, `dsyrk_`,
-`dsyev_`) declared in the translation unit rather than through `<mkl.h>`, so
+`dtrsm_`, `dpstrf_`) declared in the translation unit rather than through
+`<mkl.h>`, so
 the file builds unchanged against either MKL or the netlib libraries that
 `gtf_numeric` also carries.
 

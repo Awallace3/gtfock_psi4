@@ -28,10 +28,15 @@ typedef struct PDF *PDF_t;
 /*
  * Build and distribute the fitted tensor. Collective over comm; every rank
  * must pass identical basis sets. This is the expensive call: it computes all
- * three-center integrals, forms J^-1/2, and redistributes.
+ * three-center integrals, factors the Coulomb metric, fits, and redistributes.
  *
- * fitting_cond is the relative eigenvalue cutoff used when inverting the
- * Coulomb metric; pass a non-positive value for the 1e-12 default.
+ * fitting_cond is the relative pivot cutoff used when factoring the Coulomb
+ * metric: auxiliary functions whose pivot falls below fitting_cond times the
+ * largest are dropped. Pass a non-positive value for the 1e-12 default. This is
+ * a pivot criterion, not the relative eigenvalue floor Psi4's
+ * DF_FITTING_CONDITION applies; the two keep different function counts when the
+ * metric's spectrum straddles the cutoff. See pdf_factor_metric for the
+ * measured size of that difference.
  *
  * nthreads <= 0 means omp_get_max_threads().
  */
@@ -56,8 +61,14 @@ CIntStatus_t PDF_computeJK(PDF_t pdf, const double *D, const double *Cocc,
                            int nocc, double *J, double *K);
 
 int PDF_nBasisFuncs(PDF_t pdf);
+/* Auxiliary basis functions the caller supplied. */
 int PDF_nAuxFuncs(PDF_t pdf);
-/* Auxiliary functions owned by this rank after redistribution. */
+/*
+ * Fitted tensor rows retained after the metric factorization, summed over
+ * ranks. Equals PDF_nAuxFuncs() minus PDF_nMetricNullVectors().
+ */
+int PDF_nFitFuncs(PDF_t pdf);
+/* Fitted tensor rows owned by this rank after redistribution. */
 int PDF_nLocalAuxFuncs(PDF_t pdf);
 /* Auxiliary functions dropped by the fitting-condition cutoff, on every rank. */
 int PDF_nMetricNullVectors(PDF_t pdf);
@@ -69,6 +80,27 @@ size_t PDF_localTensorSize(PDF_t pdf);
  * AO-element partition can leave a rank with no shell pairs.
  */
 int PDF_nLocalPairElements(PDF_t pdf);
+
+/*
+ * Wall seconds this rank spent in each phase of PDF_create, for attributing
+ * setup cost. Phases are disjoint and sum to slightly less than the call, the
+ * remainder being allocation and partitioning. Every rank measures its own
+ * elapsed time, including whatever it spent waiting in a collective, so the
+ * spread across ranks is the load imbalance.
+ */
+typedef enum
+{
+    PDF_PHASE_METRIC = 0, /* two-center integrals and their reduction */
+    PDF_PHASE_FACTOR,     /* pivoted Cholesky of the metric, replicated */
+    PDF_PHASE_INT3C,      /* three-center integrals over this rank's pairs */
+    PDF_PHASE_FIT,        /* pivot reorder and triangular solve, in place */
+    PDF_PHASE_REDIST,     /* redistribution onto the auxiliary axis */
+    PDF_NPHASES
+} PDF_Phase;
+
+double PDF_phaseSeconds(PDF_t pdf, PDF_Phase phase);
+/* A stable short name for each phase; NULL for an out-of-range value. */
+const char *PDF_phaseName(PDF_Phase phase);
 
 #ifdef __cplusplus
 }
