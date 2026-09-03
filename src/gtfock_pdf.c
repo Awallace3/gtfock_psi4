@@ -69,8 +69,14 @@ extern void dpstrf_(const char *uplo, const int *n, double *a, const int *lda,
  * either side; 32 is the middle of that plateau. A band is 32 * nbf doubles per
  * thread, so the scratch stays small and, unlike the nbf^2 slice it replaced,
  * does not grow with the system.
+ *
+ * Overridable at compile time so a build sweep can re-measure the plateau on
+ * hardware with a different cache, or on a system far outside the sizes above,
+ * without editing this file.
  */
+#ifndef PDF_PANEL_ROWS
 #define PDF_PANEL_ROWS 32
+#endif
 
 struct PDF
 {
