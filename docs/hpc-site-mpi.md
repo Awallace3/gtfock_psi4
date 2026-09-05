@@ -290,3 +290,32 @@ way reports it as MPICH-ABI when it is in fact correct. `nm -Du`, or
 equivalently `readelf --dyn-syms -W <lib> | awk '$7 == "UND"'`, reads the
 dynamic symbol table, which is present either way. If a zero is ever surprising,
 check `file <lib>` before concluding anything.
+
+## Checking that an `LD_PRELOAD` selection actually took
+
+A related false negative, from the same incident. A harness that measures
+several builds of this library against each other selects between them with
+`LD_PRELOAD`, and wants to confirm that the build it named is the build that
+answered. The natural check is to import the consumer and look for the library
+in the mapping table:
+
+```bash
+LD_PRELOAD=$VARIANTS/band32.so python -c '
+import psi4
+print([l.split()[-1] for l in open("/proc/self/maps") if "libgtfockdf" in l])'
+```
+
+That check can never pass. A preloaded object whose `SONAME` is
+`libgtfockdf.so.0` satisfies the consumer's `DT_NEEDED` on its own, so the copy
+found through `DT_RPATH` is never mapped at all, and the file that *is* mapped
+is named `band32.so` - which does not contain the string `libgtfockdf`. When
+the preload wins the filter matches nothing; only when it loses does it match
+anything. Match the path you preloaded, or the directory the variants live in,
+not the installed `SONAME`:
+
+```python
+if "libgtfockdf" in l or "/_variants/" in l
+```
+
+The general shape is the same as the `nm -u` trap above: a verification whose
+failure mode is silence reads as a failure of the thing being verified.
