@@ -37,14 +37,14 @@ The library really was compiled that way. In the object that crashed:
 ```
 PDF_create:  mov %edi,%ebp             # MPI_Comm taken as a 32-bit int
              movl $0x4000000,(%r12)    # MPICH's MPI_COMM_NULL, as an immediate
-nm -u libgtfockdf.so.0.1.0 | grep -c ompi_mpi_   ->  0
+nm -Du libgtfockdf.so.0.1.0 | grep -c ompi_mpi_   ->  0
 ```
 
 while the caller, built in a different shell, had the Open MPI ABI:
 
 ```
 main:        mov 0x44666(%rip),%rdi    # ompi_mpi_comm_world, a full pointer
-nm -u test_pdf_jk | grep -c ompi_mpi_            ->  4
+nm -Du test_pdf_jk | grep -c ompi_mpi_            ->  4
 ```
 
 So `MPI_COMM_WORLD` was passed as `0x0000155554110460` and received as
@@ -180,7 +180,7 @@ between them is the environment scrub and the rebuilt library.
 Before, against the library the benchmark shipped:
 
 ```
-$ nm -u .../fm-gtfock/diag38/tree/_install/lib64/libgtfockdf.so.0.1.0 | grep -c ompi_mpi_
+$ nm -Du .../fm-gtfock/diag38/tree/_install/lib64/libgtfockdf.so.0.1.0 | grep -c ompi_mpi_
 0
 $ mpirun -n 1 .../test_pdf_jk ...
 Caught signal 11 (Segmentation fault: address not mapped to object at address 0x540df540)
@@ -195,7 +195,7 @@ and gcc entries from `CPATH` and `LIBRARY_PATH`, and unsetting `GCC_ROOT`,
 
 ```
 -- Found MPI_C: .../envs/p4gtf/lib/libmpi.so
-$ nm -u .../diag38/build/gtfock/libgtfockdf.so.0.1.0 | grep -c ompi_mpi_
+$ nm -Du .../diag38/build/gtfock/libgtfockdf.so.0.1.0 | grep -c ompi_mpi_
 3
 $ ctest --test-dir .../diag38/build/gtfock --output-on-failure -R "pdf|df"
     Start 5: df_integrals ................ Passed 0.10 sec
@@ -273,7 +273,7 @@ conda OpenMPI, every object that uses a predefined communicator must reference
 Open MPI's globals:
 
 ```bash
-nm -u libgtfockdf.so.0.1.0 | grep -c ompi_mpi_    # expect > 0; 0 means MPICH ABI
+nm -Du libgtfockdf.so.0.1.0 | grep -c ompi_mpi_    # expect > 0; 0 means MPICH ABI
 ```
 
 Zero undefined `ompi_mpi_*` symbols in a library that calls `MPI_Comm_dup` on
@@ -281,3 +281,12 @@ Zero undefined `ompi_mpi_*` symbols in a library that calls `MPI_Comm_dup` on
 rebuilt. This is the cheapest way to audit a directory of previously built
 variants; it is how the four benchmark libraries in this incident were found to
 be affected while the executables that loaded them were not.
+
+The `-D` is not optional. Plain `nm -u` reads the *static* symbol table, which a
+stripped object does not have, so on a stripped library it prints nothing at all
+and the count comes back `0` - indistinguishable from a genuinely broken
+library. Auditing psi4's stripped `core.cpython-312-x86_64-linux-gnu.so` that
+way reports it as MPICH-ABI when it is in fact correct. `nm -Du`, or
+equivalently `readelf --dyn-syms -W <lib> | awk '$7 == "UND"'`, reads the
+dynamic symbol table, which is present either way. If a zero is ever surprising,
+check `file <lib>` before concluding anything.

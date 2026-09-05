@@ -6,7 +6,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - The canonical clean validation is `CMAKE_BUILD_PARALLEL_LEVEL=12 ./build_deps.sh --clean`; it builds through CMake and runs Simint plus native MPI/numerical regressions.
 - Pinned submodules stay immutable. `build_deps.sh` applies `patches/gtfock-modern.patch` to `_build/gtfock-src`; numerical causality and counterfactual evidence are in `docs/numerical-root-cause.md`.
 - The local package gate is `./conda/build-local.sh`; it builds the artifact, runs installed CMake/MPI tests, and validates a fresh CPU-only install. Submission blockers and the OpenMPI solver-only CUDA metadata workaround are keyed in `docs/conda-packaging.md`.
-- On an HPC login node the site modules silently hijack the conda toolchain: `CPATH` is searched ahead of the `-isystem` that carries conda's `mpi.h`, and `GCC_ROOT` redirects conda's gfortran to a site GCC. `build_deps.sh` and `set_vars.sh` scrub both; the incident, the operator procedure, and the `nm -u <lib> | grep -c ompi_mpi_` ABI audit are in `docs/hpc-site-mpi.md`.
+- On an HPC login node the site modules silently hijack the conda toolchain: `CPATH` is searched ahead of the `-isystem` that carries conda's `mpi.h`, and `GCC_ROOT` redirects conda's gfortran to a site GCC. `build_deps.sh` and `set_vars.sh` scrub both; the incident, the operator procedure, and the `nm -Du <lib> | grep -c ompi_mpi_` ABI audit are in `docs/hpc-site-mpi.md`.
 - This repository milestone is the native GTFock foundation and installable CMake interface. Optional Psi4/mpi4py integration implementation is handled separately; see `README.md`.
 
 ## Maintaining this file
