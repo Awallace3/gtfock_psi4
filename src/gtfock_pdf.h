@@ -16,6 +16,11 @@
 
 #include <mpi.h>
 
+/* Refuses to compile if the <mpi.h> above is not the header belonging to the
+ * MPI library this project was built against. Mixing the two links cleanly and
+ * then faults inside MPI_Comm_dup; see docs/hpc-site-mpi.md. */
+#include "gtfock_mpi_abi.h"
+
 #include <CInt.h>
 
 #ifdef __cplusplus

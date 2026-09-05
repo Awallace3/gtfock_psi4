@@ -1,0 +1,50 @@
+/*
+ * Compile-time check that <mpi.h> and the linked MPI library are the same
+ * implementation.
+ *
+ * MPI implementations share function names but not an ABI. Open MPI's MPI_Comm
+ * is a pointer to an opaque struct; in the MPICH family (MPICH, MVAPICH2,
+ * Intel MPI) it is an int. Mixing one implementation's header with another's
+ * library therefore compiles and links without a single diagnostic, and fails
+ * only at run time: the first call that passes a communicator truncates the
+ * 64-bit handle to 32 bits and segmentation faults inside MPI itself, usually
+ * MPI_Comm_dup, with a stack that names no code of ours.
+ *
+ * That mixing is easy to arrange by accident on an HPC login node. A site MPI
+ * module exports its own include directory in CPATH, and both icx and gcc
+ * search CPATH ahead of the -isystem directories CMake emits for MPI::MPI_C,
+ * so `module load` in a build shell replaces this project's <mpi.h> without
+ * changing any compiler argument. docs/hpc-site-mpi.md records the incident
+ * this file exists to prevent and the procedure that avoids it.
+ *
+ * GTF_MPI_EXPECT_OPEN_MPI is substituted at configure time from the mpi.h that
+ * ships beside the MPI library CMake resolved, so it describes the library
+ * this translation unit will actually be linked against.
+ */
+
+#ifndef GTFOCK_MPI_ABI_H
+#define GTFOCK_MPI_ABI_H
+
+#define GTF_MPI_EXPECT_OPEN_MPI @GTF_MPI_EXPECT_OPEN_MPI@
+
+#include <mpi.h>
+
+#if GTF_MPI_EXPECT_OPEN_MPI
+#  ifndef OPEN_MPI
+#    error "MPI header/library mismatch: this build links Open MPI, but <mpi.h> resolved to a different MPI implementation (no OPEN_MPI macro), so MPI_Comm has the wrong size and every communicator argument will be truncated at run time. A site MPI module is almost certainly exporting its include directory in CPATH, which icx and gcc search ahead of -isystem: run 'module purge' or clear CPATH/C_INCLUDE_PATH and rebuild. See docs/hpc-site-mpi.md."
+#  elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+/* The macro is the load-bearing check; this catches the remaining case where a
+ * header does define OPEN_MPI but is not the one that belongs to this library.
+ * It sits in the #elif branch so a header that failed the check above is
+ * reported once rather than twice, and its message stays true when it fires. */
+_Static_assert(sizeof(MPI_Comm) == sizeof(void *),
+               "MPI header/library mismatch: <mpi.h> defines OPEN_MPI but "
+               "MPI_Comm is not pointer-sized. See docs/hpc-site-mpi.md.");
+#  endif
+#else
+#  ifdef OPEN_MPI
+#    error "MPI header/library mismatch: this build links a non-Open-MPI library, but <mpi.h> resolved to Open MPI's header, so MPI_Comm has the wrong size and every communicator argument will be reinterpreted at run time. Check CPATH/C_INCLUDE_PATH for a stray MPI include directory and rebuild. See docs/hpc-site-mpi.md."
+#  endif
+#endif
+
+#endif /* GTFOCK_MPI_ABI_H */

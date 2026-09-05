@@ -59,6 +59,8 @@ The build runs:
 
 - generated Simint tests;
 - fail-closed generated-Simint cleanup and no-CUDA link-classifier regressions;
+- an MPI header/library ABI guard that rejects a build whose `mpi.h` comes from
+  a different MPI than the library being linked;
 - an installed `pfock.h` compile smoke test and a relocated external
   CMake-consumer test;
 - a configure-time refusal of GTFock sources without the corrected atomic;
@@ -73,6 +75,14 @@ Re-run the GTFock tests directly with:
 ```bash
 ctest --test-dir _build/gtfock --output-on-failure
 ```
+
+On an HPC system whose login nodes load a site MPI or compiler module, clear the
+environment before building: those modules export `CPATH`, `GCC_ROOT` and
+`MPI_ROOT`, which the compilers and CMake prefer over the conda toolchain that
+`build_deps.sh` names explicitly. The build now refuses a mismatched `mpi.h`
+rather than producing a library that segfaults inside `MPI_Comm_dup`. See
+[`docs/hpc-site-mpi.md`](docs/hpc-site-mpi.md) for the incident, the operator
+procedure, and how to audit an already-built artifact.
 
 Run the native SCF path with:
 
