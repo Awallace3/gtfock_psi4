@@ -81,6 +81,64 @@ for tool in cmake ninja python git icx icpx mpicc mpirun; do
     fi
 done
 
+# Naming the right compiler is not enough: icx and gcc both search CPATH ahead
+# of the -isystem directories CMake emits for MPI::MPI_C, and LIBRARY_PATH
+# ahead of the link directories. An HPC site MPI module exports both, so simply
+# having it loaded replaces conda's <mpi.h> with, say, MVAPICH2's without
+# changing a single compiler argument - which links cleanly against conda's
+# OpenMPI and then faults inside MPI_Comm_dup. Drop every entry that is not
+# inside a supported conda prefix, and say which ones went. Losing a genuinely
+# needed site include here would fail the build loudly, which is the trade this
+# project wants. See docs/hpc-site-mpi.md.
+sanitize_search_path() {
+    local var=$1
+    local value=${!var:-}
+    [[ -n $value ]] || return 0
+    local kept=() dropped=() entry resolved
+    local IFS=:
+    for entry in $value; do
+        [[ -n $entry ]] || continue
+        resolved=$(readlink -f "$entry" 2>/dev/null || true)
+        if path_is_in_conda "${resolved:-$entry}"; then
+            kept+=("$entry")
+        else
+            dropped+=("$entry")
+        fi
+    done
+    ((${#dropped[@]})) || return 0
+    echo "Dropping non-conda $var entries so they cannot shadow the conda toolchain:" >&2
+    printf '    %s\n' "${dropped[@]}" >&2
+    if ((${#kept[@]})); then
+        export "$var=${kept[*]}"
+    else
+        unset "$var"
+    fi
+}
+for search_path in CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH OBJC_INCLUDE_PATH \
+                   OBJCPLUS_INCLUDE_PATH LIBRARY_PATH; do
+    sanitize_search_path "$search_path"
+done
+
+# The same module set redirects the GNU driver itself. conda-forge's gcc honours
+# GCC_ROOT as its installation prefix, and honours GCC_EXEC_PREFIX and
+# COMPILER_PATH when searching for its own subprograms, so a site gcc module
+# that exports any of them sends conda's gfortran looking for f951 and cc1 under
+# the site GCC tree. It does not find them, and the build dies at
+# `project(... Fortran)` with "cannot execute 'f951'". Same rule as above: keep
+# only what lives in a supported conda prefix.
+for driver_root in GCC_ROOT GCC_EXEC_PREFIX COMPILER_PATH; do
+    sanitize_search_path "$driver_root"
+done
+
+# And FindMPI takes hints from the environment before it looks at PATH: a site
+# MPI module that exports MPI_ROOT wins over the conda mpicc that is first on
+# PATH, so CMake resolves the site libmpi.so. That one is caught by the prefix
+# gate in CMakeLists.txt rather than mis-linked silently, but the build still
+# stops, so clear the hints here for the same reason.
+for mpi_hint in MPI_ROOT MPI_HOME I_MPI_ROOT; do
+    sanitize_search_path "$mpi_hint"
+done
+
 CC=$(readlink -f "$(command -v icx)")
 CXX=$(readlink -f "$(command -v icpx)")
 if [[ -z ${FC:-} ]]; then

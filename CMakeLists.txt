@@ -141,6 +141,53 @@ endif()
 foreach(_mpi_library IN LISTS MPI_C_LIBRARIES)
   gtf_require_prefix("MPI" "${_mpi_library}" _gtf_host_prefixes)
 endforeach()
+
+# Gating the MPI library alone leaves the header unguarded, and the header is
+# the half that goes wrong in practice: CPATH is searched ahead of the -isystem
+# directories MPI::MPI_C emits, so a site MPI module can substitute its own
+# <mpi.h> long after this configure step ran. Resolve the mpi.h that ships with
+# the library FindMPI just accepted, hold it to the same prefix rule, and
+# record which implementation it is so every translation unit can check the
+# header it actually opened against it. See docs/hpc-site-mpi.md.
+set(_gtf_mpi_include_dirs ${MPI_C_INCLUDE_DIRS})
+if(NOT _gtf_mpi_include_dirs AND MPI_C_HEADER_DIR)
+  set(_gtf_mpi_include_dirs "${MPI_C_HEADER_DIR}")
+endif()
+set(_gtf_mpi_header "")
+foreach(_dir IN LISTS _gtf_mpi_include_dirs)
+  if(EXISTS "${_dir}/mpi.h")
+    set(_gtf_mpi_header "${_dir}/mpi.h")
+    break()
+  endif()
+endforeach()
+if(NOT _gtf_mpi_header)
+  message(FATAL_ERROR
+    "FindMPI reported no directory containing mpi.h, so the MPI header this "
+    "build compiles against cannot be identified; configure with a plain "
+    "icx/icpx compiler and let FindMPI locate the conda OpenMPI installation "
+    "instead of an MPI wrapper")
+endif()
+gtf_require_prefix("MPI header" "${_gtf_mpi_header}" _gtf_host_prefixes)
+file(STRINGS "${_gtf_mpi_header}" _gtf_mpi_open_mpi_define
+  REGEX "^[ \t]*#[ \t]*define[ \t]+OPEN_MPI[ \t]+1")
+if(_gtf_mpi_open_mpi_define)
+  set(GTF_MPI_EXPECT_OPEN_MPI 1)
+else()
+  set(GTF_MPI_EXPECT_OPEN_MPI 0)
+endif()
+set(_gtf_generated_include "${CMAKE_CURRENT_BINARY_DIR}/generated-include")
+set(_gtf_mpi_abi_header "${_gtf_generated_include}/gtfock_mpi_abi.h")
+configure_file(src/gtfock_mpi_abi.h.in "${_gtf_mpi_abi_header}" @ONLY)
+
+# The header only helps a translation unit that includes it. gtfock_pdf.h pulls
+# it in for consumers of the public API; force it into every target of ours
+# that compiles MPI code, including the GTFock and GTMatrix sources that stay
+# unmodified as pinned submodules.
+function(gtf_guard_mpi_abi target)
+  target_include_directories(${target} PRIVATE "${_gtf_generated_include}")
+  target_compile_options(${target} PRIVATE -include "${_gtf_mpi_abi_header}")
+endfunction()
+
 if(NOT CMAKE_C_COMPILER_ID STREQUAL "IntelLLVM" OR
    NOT CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
   message(FATAL_ERROR
@@ -220,6 +267,7 @@ add_library(GTFock::CInt ALIAS cint)
 add_library(gtfockdf SHARED src/gtfock_df.c src/gtfock_pdf.c)
 target_include_directories(gtfockdf PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
+  "$<BUILD_INTERFACE:${_gtf_generated_include}>"
   "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 # cint carries the libcint include directory, which supplies both the public
 # CInt.h and the internal cint_def.h that exposes struct BasisSet.
@@ -229,6 +277,7 @@ target_link_libraries(gtfockdf PUBLIC cint MPI::MPI_C)
 target_link_libraries(gtfockdf PRIVATE
   simint::simint OpenMP::OpenMP_C gtf_numeric m)
 gtf_target_defaults(gtfockdf)
+gtf_guard_mpi_abi(gtfockdf)
 set_target_properties(gtfockdf PROPERTIES
   EXPORT_NAME GTFockDF
   VERSION ${PROJECT_VERSION}
@@ -249,6 +298,7 @@ target_include_directories(GTMatrix PUBLIC
   "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 target_link_libraries(GTMatrix PUBLIC MPI::MPI_C)
 gtf_target_defaults(GTMatrix)
+gtf_guard_mpi_abi(GTMatrix)
 set_target_properties(GTMatrix PROPERTIES EXPORT_NAME GTMatrix)
 add_library(GTFock::GTMatrix ALIAS GTMatrix)
 
@@ -289,6 +339,7 @@ target_link_libraries(gtfock PUBLIC
   MPI::MPI_C OpenMP::OpenMP_C cint GTMatrix)
 target_link_libraries(gtfock PRIVATE simint::simint gtf_numeric m)
 gtf_target_defaults(gtfock)
+gtf_guard_mpi_abi(gtfock)
 set_target_properties(gtfock PROPERTIES
   EXPORT_NAME GTFock
   VERSION ${PROJECT_VERSION}
@@ -308,6 +359,7 @@ if(GTF_BUILD_PSCF)
     gtfock cint GTMatrix simint::simint MPI::MPI_C OpenMP::OpenMP_C
     gtf_numeric m)
   gtf_target_defaults(pscf)
+  gtf_guard_mpi_abi(pscf)
   set_target_properties(pscf PROPERTIES INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
 endif()
 
@@ -322,6 +374,19 @@ if(BUILD_TESTING)
     COMMAND "${BASH_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_packaging_guards.sh")
 
+  # add_test splits a semicolon-separated list across arguments, so the include
+  # directories travel as one pipe-separated string.
+  string(REPLACE ";" "|" _gtf_mpi_include_dirs_arg "${_gtf_mpi_include_dirs}")
+  add_test(NAME mpi_abi_guard
+    COMMAND "${CMAKE_COMMAND}"
+      "-DC_COMPILER=${CMAKE_C_COMPILER}"
+      "-DGUARD_HEADER=${_gtf_mpi_abi_header}"
+      "-DMPI_INCLUDE_DIRS=${_gtf_mpi_include_dirs_arg}"
+      "-DEXPECT_OPEN_MPI=${GTF_MPI_EXPECT_OPEN_MPI}"
+      "-DWORK_DIR=${CMAKE_BINARY_DIR}/mpi-abi-guard"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mpi_abi_guard.cmake")
+  set_tests_properties(mpi_abi_guard PROPERTIES TIMEOUT 120)
+
   add_executable(test_atomic_add tests/test_atomic_add.c)
   target_include_directories(test_atomic_add PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -335,6 +400,7 @@ if(BUILD_TESTING)
 
   add_executable(test_pdf_jk tests/test_pdf_jk.c)
   target_link_libraries(test_pdf_jk PRIVATE gtfockdf cint MPI::MPI_C m)
+  gtf_guard_mpi_abi(test_pdf_jk)
   # Three ranks is the interesting count: the AO-element partition leaves one
   # rank with no shell pairs, so it exercises the empty-block paths in Phase A
   # and in the redistribution.
@@ -356,6 +422,7 @@ if(BUILD_TESTING)
     "${CMAKE_CURRENT_SOURCE_DIR}/libcint"
     "${CMAKE_CURRENT_SOURCE_DIR}/GTMatrix")
   target_link_libraries(test_overlap PRIVATE gtfock cint GTMatrix MPI::MPI_C)
+  gtf_guard_mpi_abi(test_overlap)
   add_test(NAME legacy_mpi_overlap
     COMMAND "${CMAKE_COMMAND}" -E env
       "OMP_NUM_THREADS=1"
@@ -441,6 +508,7 @@ install(FILES
   libcint/CInt.h
   src/gtfock_df.h
   src/gtfock_pdf.h
+  "${_gtf_mpi_abi_header}"
   "${GTF_GTFock_SOURCE_DIR}/pfock/pfock.h"
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY GTMatrix/
